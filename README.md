@@ -194,6 +194,22 @@ conversation per workspace via `conversation_id`.
 
 ## Development
 
+Source layout (the entry `index.ts` only wires the extension; all logic lives
+in `src/` with one-directional dependencies):
+
+```
+index.ts        extension entry: registers tools, orchestration guidance, commands
+src/config.ts   defaults, env vars + ~/.pi/agy.json, fleet caps
+src/model.ts      gemini model/effort consistency (matchEffort)
+src/paths.ts     workspace path normalization (Git-Bash forms on Windows)
+src/status.ts    live activity lines, run log, durations, debounce
+src/fleet.ts     fan-out lane state + per-lane board rendering
+src/runner.ts    agy spawn, stream-json parsing, evidence extraction
+src/results.ts   tool result assembly (response + run log + evidence)
+src/executors.ts shared tool execution (single-run + fleet)
+src/tools.ts     tool definitions/schemas (agy, agy_code, agy_explore, agy_fleet)
+```
+
 ```bash
 npm install          # installs dev tools + peer packages
 npm run typecheck    # tsc --noEmit

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.1] - 2026-09-06
+
+### Changed
+
+- Codebase modularized: `index.ts` (1251 lines) split into an entry point that
+  only wires the extension plus focused `src/` modules with one-directional
+  dependencies — `config.ts`, `model.ts`, `paths.ts`, `status.ts` (live
+  activity lines), `fleet.ts` (fan-out board), `runner.ts` (agy stream
+  parsing), `results.ts` (tool result assembly), `executors.ts` (shared tool
+  execution), `tools.ts` (tool definitions). Public API unchanged; dead code
+  (`WRITE_TOOLS`, unused imports) removed.
+
 ## [0.2.0] - 2026-09-06
 
 ### Added

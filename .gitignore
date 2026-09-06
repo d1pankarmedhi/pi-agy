@@ -1,4 +1,45 @@
+# Dependencies
 node_modules/
-*.log
-.DS_Store
+
+# Build output
+dist/
+build/
+out/
 *.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# agy / local agent state
+.agy/
+.agy-state/
+*.agy.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Misc
+.cache/
+.tmp/

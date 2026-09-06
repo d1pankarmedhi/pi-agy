@@ -63,8 +63,7 @@ environment variables (highest precedence) or an optional user config file.
 | `AGY_EFFORT`        | `high`                  | reasoning effort (`low`\|`medium`\|`high`) |
 | `AGY_AGENT`         | —                       | agy agent name (`agy agents` to list)      |
 | `AGY_TIMEOUT`       | `10m`                   | max wait per run (`--print-timeout`)       |
-| `AGY_ALLOW_CMDS`    | `true` (default in config file: true) | pass `--dangerously-skip-permissions` by default |
-| `AGY_ORCHESTRATE`   | `true`                  | append orchestrator/verification guidance to pi's system prompt |
+| `AGY_ALLOW_CMDS`    | `true`                  | pass `--dangerously-skip-permissions` by default |
 | `AGY_CONFIG`        | `~/.pi/agy.json`        | path to the optional user config file      |
 
 Optional user config file `~/.pi/agy.json` (env vars win over it, per-call
@@ -76,8 +75,7 @@ tool params win over both):
   "model": "gemini-3.8-flash-high",
   "effort": "high",
   "timeout": "10m",
-  "defaultAllowCommands": true,
-  "orchestrateAndVerify": true
+  "defaultAllowCommands": true
 }
 ```
 
@@ -86,9 +84,12 @@ tool params win over both):
 > `gemini-3.8-flash-medium` + `--effort high`. The extension auto-fixes gemini
 > slugs to match the requested effort (see `matchEffort`).
 
-## Orchestration pattern (pi = orchestrator, agy = subagent)
+## Orchestration pattern (pi = orchestrator, agy = subagent) — automatic
 
-With `orchestrateAndVerify: true` (default), pi's system prompt tells it to:
+pi-agy **automatically** injects orchestration + verification guidance into
+pi's system prompt on every agent start (`before_agent_start`). No manual
+system prompt edits and no configuration are needed — installing the package
+activates it:
 
 1. **Delegate** low-level subtasks to the agy tools instead of doing them inline.
 2. **Verify** after each run — files exist with the right contents (`read`/`grep`),

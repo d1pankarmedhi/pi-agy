@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.1] - 2025
+
+### Changed
+
+- Orchestration + verification guidance is now injected **automatically** on
+  every agent start. The `orchestrateAndVerify` config knob (env var / config
+  file key) was removed — installation alone activates it; no manual system
+  prompt edits or user configuration are needed.
+
 ## [0.1.0] - 2025
 
 ### Added

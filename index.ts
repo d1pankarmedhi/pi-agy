@@ -5,7 +5,8 @@
  * research passes) to Google Antigravity's headless CLI (`agy`), which drives
  * a Gemini (or other) model agent with its own tool loop. Pi's main agent
  * stays in control as the ORCHESTRATOR and verifies the agent's work before
- * reporting success (see `orchestrateAndVerify`).
+ * reporting success — that guidance is injected automatically on every agent
+ * start, so installation is all users need.
  *
  * Requirements:
  *   - `agy` installed and authenticated once (`agy -p "hi"` works).
@@ -13,7 +14,7 @@
  *
  * Configuration (all optional — sensible defaults below):
  *   - Env vars:  AGY_BIN, AGY_MODEL, AGY_EFFORT, AGY_AGENT, AGY_TIMEOUT,
- *                AGY_ALLOW_CMDS, AGY_ORCHESTRATE, AGY_CONFIG
+ *                AGY_ALLOW_CMDS, AGY_CONFIG
  *   - User file: ~/.pi/agy.json (path overridable via AGY_CONFIG)
  *   Order of precedence: built-in defaults < user file < env vars < tool params.
  *
@@ -54,7 +55,6 @@ export interface AgyConfig {
 	agent?: string;
 	timeout: string;
 	defaultAllowCommands: boolean;
-	orchestrateAndVerify: boolean;
 	configFile: string;
 }
 
@@ -64,7 +64,6 @@ const DEFAULT_CONFIG: Omit<AgyConfig, "configFile"> = {
 	effort: "high",
 	timeout: "10m",
 	defaultAllowCommands: true,
-	orchestrateAndVerify: true,
 };
 
 function userConfigPath(): string {
@@ -89,7 +88,6 @@ function loadConfig(): AgyConfig {
 		agent: process.env.AGY_AGENT || file.agent,
 		timeout: process.env.AGY_TIMEOUT || file.timeout || DEFAULT_CONFIG.timeout,
 		defaultAllowCommands: envBool(process.env.AGY_ALLOW_CMDS, file.defaultAllowCommands ?? DEFAULT_CONFIG.defaultAllowCommands),
-		orchestrateAndVerify: envBool(process.env.AGY_ORCHESTRATE, file.orchestrateAndVerify ?? DEFAULT_CONFIG.orchestrateAndVerify),
 		configFile: filePath,
 	};
 }
@@ -637,7 +635,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyCode);
 
 	// Pi is the orchestrator: when it delegates work to the agy agent tools, it
-	// must verify the outcome itself before reporting success.
+	// must verify the outcome itself before reporting success. This guidance is
+	// injected automatically on every agent start — installation is all users
+	// need; there is nothing to configure manually.
 	const ORCHESTRATOR_GUIDE = [
 		"## Orchestration with the agy tools",
 		"You are the orchestrator. Use agy, agy_code, and agy_explore to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity Gemini agent instead of doing them inline.",
@@ -649,11 +649,9 @@ export default function (pi: ExtensionAPI) {
 		"Report what was done with concrete evidence: files changed and verification results.",
 	].join("\n");
 
-	if (config.orchestrateAndVerify) {
-		pi.on("before_agent_start", async (event) => {
-			return { systemPrompt: event.systemPrompt + "\n\n" + ORCHESTRATOR_GUIDE };
-		});
-	}
+	pi.on("before_agent_start", async (event) => {
+		return { systemPrompt: event.systemPrompt + "\n\n" + ORCHESTRATOR_GUIDE };
+	});
 
 	// Quick sanity check / model list.
 	pi.registerCommand("agy-models", {
@@ -667,7 +665,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			const msg =
 				`agy bin=${config.bin}\nmodel=${config.model}\neffort=${config.effort}\n` +
-				`allowCommands=${config.defaultAllowCommands}  orchestrateAndVerify=${config.orchestrateAndVerify}\n` +
+				`allowCommands=${config.defaultAllowCommands}\n` +
 				`timeout=${config.timeout}\nconfig=${config.configFile}\n\n${models}`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "info");
 			else console.log(msg);

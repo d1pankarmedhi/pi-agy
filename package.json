@@ -1,6 +1,6 @@
 {
   "name": "pi-agy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
   "type": "module",
   "scripts": {

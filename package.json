@@ -1,0 +1,54 @@
+{
+  "name": "pi-agy",
+  "version": "0.1.0",
+  "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/*.test.ts\"",
+    "audit:runtime": "npm audit --omit=dev --omit=peer"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "antigravity",
+    "agy",
+    "gemini",
+    "agent",
+    "delegation",
+    "orchestration"
+  ],
+  "author": "d1pankarmedhi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/d1pankarmedhi/pi-agy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/d1pankarmedhi/pi-agy/issues"
+  },
+  "homepage": "https://github.com/d1pankarmedhi/pi-agy#readme",
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

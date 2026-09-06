@@ -1,7 +1,7 @@
 {
   "name": "pi-agy",
-  "version": "0.1.1",
-  "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
+  "version": "0.2.0",
+  "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Live status shows what the agent is doing (file edited, command run) and agy_fleet fans out multiple agents in parallel. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -18,7 +18,10 @@
     "gemini",
     "agent",
     "delegation",
-    "orchestration"
+    "orchestration",
+    "fleet",
+    "fan-out",
+    "parallel"
   ],
   "author": "d1pankarmedhi",
   "license": "MIT",

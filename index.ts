@@ -8,13 +8,23 @@
  * reporting success — that guidance is injected automatically on every agent
  * start, so installation is all users need.
  *
+ * Live status, subagent-style:
+ *   - Every agy run streams a compact status line into the conversation while
+ *     it works: which step the agent is on, the file it is writing/editing,
+ *     the command it is running (`> step 4 · ✎ src/main.ts`, `$ npm test`).
+ *     A parallel footer status and a final "Run log" of every tool step make
+ *     progress visible without babysitting the run.
+ *   - `agy_fleet` fans out multiple agy agents on a list of tasks (bounded
+ *     concurrency) and publishes a live per-lane board — same shape as
+ *     pi-subagents cards — then returns per-lane evidence for verification.
+ *
  * Requirements:
  *   - `agy` installed and authenticated once (`agy -p "hi"` works).
  *   - Headless mode uses cached credentials; no interactive login needed.
  *
  * Configuration (all optional — sensible defaults below):
  *   - Env vars:  AGY_BIN, AGY_MODEL, AGY_EFFORT, AGY_AGENT, AGY_TIMEOUT,
- *                AGY_ALLOW_CMDS, AGY_CONFIG
+ *                AGY_ALLOW_CMDS, AGY_FLEET_CONCURRENCY, AGY_CONFIG
  *   - User file: ~/.pi/agy.json (path overridable via AGY_CONFIG)
  *   Order of precedence: built-in defaults < user file < env vars < tool params.
  *
@@ -55,6 +65,7 @@ export interface AgyConfig {
 	agent?: string;
 	timeout: string;
 	defaultAllowCommands: boolean;
+	fleetConcurrency: number;
 	configFile: string;
 }
 
@@ -64,7 +75,18 @@ const DEFAULT_CONFIG: Omit<AgyConfig, "configFile"> = {
 	effort: "high",
 	timeout: "10m",
 	defaultAllowCommands: true,
+	fleetConcurrency: 3,
 };
+
+/** Hard cap for parallel agy lanes (also the clamp ceiling for the config). */
+export const MAX_FLEET_CONCURRENCY = 8;
+/** Hard cap for tasks per agy_fleet call. */
+export const MAX_FLEET_TASKS = 24;
+
+export function clampConcurrency(n: number, max = MAX_FLEET_CONCURRENCY): number {
+	if (!Number.isFinite(n)) return DEFAULT_CONFIG.fleetConcurrency;
+	return Math.min(max, Math.max(1, Math.floor(n)));
+}
 
 function userConfigPath(): string {
 	const env = process.env.AGY_CONFIG;
@@ -81,6 +103,10 @@ function loadConfig(): AgyConfig {
 	}
 	const envBool = (v: string | undefined, dflt: boolean) =>
 		v === undefined ? dflt : v.toLowerCase() === "true" || v === "1";
+	const envInt = (v: string | undefined, dflt: number) => {
+		const n = parseInt(v ?? "", 10);
+		return Number.isFinite(n) && n > 0 ? n : dflt;
+	};
 	return {
 		bin: process.env.AGY_BIN || file.bin || DEFAULT_CONFIG.bin,
 		model: process.env.AGY_MODEL || file.model || DEFAULT_CONFIG.model,
@@ -88,6 +114,9 @@ function loadConfig(): AgyConfig {
 		agent: process.env.AGY_AGENT || file.agent,
 		timeout: process.env.AGY_TIMEOUT || file.timeout || DEFAULT_CONFIG.timeout,
 		defaultAllowCommands: envBool(process.env.AGY_ALLOW_CMDS, file.defaultAllowCommands ?? DEFAULT_CONFIG.defaultAllowCommands),
+		fleetConcurrency: clampConcurrency(
+			envInt(process.env.AGY_FLEET_CONCURRENCY, file.fleetConcurrency ?? DEFAULT_CONFIG.fleetConcurrency)
+		),
 		configFile: filePath,
 	};
 }
@@ -149,6 +178,209 @@ function resolveWorkspace(raw: string, cwd: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Live status (subagent-style activity tracking)
+//
+// While an agy agent runs we know, from its stream-json events, the current
+// step index, which tool it is using, and the file/command that tool touches.
+// That becomes a compact status line streamed into the conversation card, a
+// footer status, and a final "Run log" in the tool result.
+// ---------------------------------------------------------------------------
+
+/** Current activity of one agy agent, derived from its stream events. */
+export interface LiveActivity {
+	/** Last step index reported by the agent (0-based from agy). */
+	step: number;
+	/** What the agent is doing right now. */
+	phase: "thinking" | "tool" | "writing" | "done";
+	/** Tool name of the active tool step, while in a tool phase. */
+	tool?: string;
+	/** File the active tool is writing/editing, if any. */
+	file?: string;
+	/** Command the active tool is running, if any. */
+	command?: string;
+	/** Number of tool steps completed so far. */
+	stepsDone: number;
+	/** Unique files touched so far. */
+	filesTouched: string[];
+	/** Milliseconds since the run started. */
+	elapsedMs: number;
+}
+
+/** One completed (or active) tool step for the run log. */
+export interface StepRecord {
+	index: number;
+	tool: string;
+	file?: string;
+	command?: string;
+	state: "active" | "done";
+}
+
+const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + "…" : s);
+
+/** Show a file path relative to the workspace when possible (cleaner status lines). */
+function toDisplayPath(fp: string, ws: string): string {
+	const sep = process.platform === "win32" ? "\\" : "/";
+	const base = ws.endsWith(sep) ? ws : ws + sep;
+	const lower = (s: string) => (process.platform === "win32" ? s.toLowerCase() : s);
+	return lower(fp).startsWith(lower(base)) ? fp.slice(base.length) : fp;
+}
+
+export function formatDuration(ms: number): string {
+	const total = Math.max(0, Math.round(ms / 1000));
+	if (total < 60) return `${total}s`;
+	const m = Math.floor(total / 60);
+	const s = total % 60;
+	return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+/** Compact one-line status for an activity, e.g. `> step 4 · ✎ src/main.ts · 42s`. */
+export function activityLine(l: LiveActivity): string {
+	const elapsed = l.elapsedMs >= 1000 ? ` · ${formatDuration(l.elapsedMs)}` : "";
+	if (l.phase === "done") {
+		const n = l.filesTouched.length;
+		return `✓ done${n ? ` · ${n} file${n === 1 ? "" : "s"} touched` : ""}${elapsed}`;
+	}
+	if (l.phase === "tool") {
+		if (l.command) return `> step ${l.step} · $ ${l.command}${elapsed}`;
+		if (l.file) return `> step ${l.step} · ✎ ${l.file}${elapsed}`;
+		const tool = l.tool && l.tool !== "run_command" ? l.tool.replace(/_/g, " ") : "working";
+		return `> step ${l.step} · ${tool}${elapsed}`;
+	}
+	return `… step ${l.step} · ${l.phase === "writing" ? "writing response" : "thinking"}${elapsed}`;
+}
+
+/** Terminal log of every completed tool step, newest last. Capped at `max` lines. */
+export function buildRunLog(steps: StepRecord[], max = 40): string[] {
+	const out: string[] = [];
+	for (const s of steps) {
+		if (s.state !== "done") continue;
+		if (out.length >= max) {
+			out.push(`  · … +${steps.length - out.length} more steps`);
+			break;
+		}
+		const what = s.command ? `$ ${s.command}` : s.file ? `✎ ${s.file}` : s.tool ?? "tool";
+		out.push(`  ✓ step ${s.index} · ${truncate(what, 140)}`);
+	}
+	return out;
+}
+
+function liveDetail(l: LiveActivity): Record<string, unknown> {
+	return {
+		step: l.step,
+		phase: l.phase,
+		tool: l.tool,
+		file: l.file,
+		command: l.command,
+		stepsDone: l.stepsDone,
+		filesTouched: [...l.filesTouched],
+		elapsedMs: l.elapsedMs,
+	};
+}
+
+/** Debounce helper for streaming updates: schedule() batches, flush() forces, cancel() stops. */
+function debounce(fn: () => void, ms: number) {
+	let timer: NodeJS.Timeout | null = null;
+	return {
+		schedule() {
+			if (timer) return;
+			timer = setTimeout(() => {
+				timer = null;
+				fn();
+			}, ms);
+		},
+		flush() {
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			fn();
+		},
+		cancel() {
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Fleet (fan-out) types
+// ---------------------------------------------------------------------------
+
+/** One lane of an agy_fleet run. */
+export interface FleetLaneState {
+	id: string;
+	task: string;
+	workspace: string;
+	status: "queued" | "running" | "done" | "failed" | "aborted";
+	startedAt?: number;
+	endedAt?: number;
+	live: LiveActivity;
+	result?: StreamResult;
+	error?: string;
+}
+
+export interface FleetSummary {
+	total: number;
+	running: number;
+	done: number;
+	failed: number;
+	aborted: number;
+	elapsedMs: number;
+}
+
+export function summarizeFleet(lanes: FleetLaneState[], now = Date.now()): FleetSummary {
+	const total = lanes.length;
+	const running = lanes.filter((l) => l.status === "running" || l.status === "queued").length;
+	const done = lanes.filter((l) => l.status === "done").length;
+	const failed = lanes.filter((l) => l.status === "failed").length;
+	const aborted = lanes.filter((l) => l.status === "aborted").length;
+	const starts = lanes.map((l) => l.startedAt ?? now);
+	const ends = lanes.map((l) => l.endedAt ?? now);
+	const elapsedMs = total ? Math.max(0, Math.max(...ends) - Math.min(...starts)) : 0;
+	return { total, running, done, failed, aborted, elapsedMs };
+}
+
+function laneLine(lane: FleetLaneState, now: number): string {
+	const id = lane.id || "?";
+	const dur = (lane.endedAt ?? now) - (lane.startedAt ?? now);
+	switch (lane.status) {
+		case "queued":
+			return `○ [${id}] waiting`;
+		case "running": {
+			const l = { ...lane.live, elapsedMs: dur };
+			return `● [${id}] ${activityLine(l)}`;
+		}
+		case "done": {
+			const bits = [`✓ [${id}] done`];
+			const f = lane.result?.files_written?.length ?? 0;
+			const c = lane.result?.commands_run?.length ?? 0;
+			if (f) bits.push(`${f} file${f === 1 ? "" : "s"}`);
+			if (c) bits.push(`${c} command${c === 1 ? "" : "s"}`);
+			if (dur >= 1000) bits.push(formatDuration(dur));
+			return bits.join(" · ");
+		}
+		case "aborted":
+			return `✗ [${id}] aborted`;
+		default: {
+			const err = lane.error ? ` · ${truncate(lane.error, 60)}` : "";
+			return `✗ [${id}] failed${err}${dur >= 1000 ? ` · ${formatDuration(dur)}` : ""}`;
+		}
+	}
+}
+
+/** Live board lines (one per lane) shown in the conversation while a fleet runs. */
+export function formatFleetBoard(lanes: FleetLaneState[], now = Date.now()): string[] {
+	if (!lanes.length) return [];
+	const s = summarizeFleet(lanes, now);
+	const head =
+		`agy_fleet · ${s.total} lanes · ${s.running} active · ${s.done} done · ` +
+		`${s.failed + s.aborted} failed · ${formatDuration(s.elapsedMs)}`;
+	return [head, ...lanes.map((l) => `  ${laneLine(l, now)}`)];
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -165,6 +397,8 @@ interface RunOptions {
 	timeout: string;
 	signal?: AbortSignal;
 	onUpdate?: AgentToolUpdateCallback;
+	/** Per-event activity callback (used by agy_fleet to keep lane state fresh). */
+	onActivity?: (live: LiveActivity) => void;
 }
 
 interface StreamResult {
@@ -180,6 +414,7 @@ interface StreamResult {
 	tool_steps?: number;
 	files_written?: string[];
 	commands_run?: string[];
+	steps?: StepRecord[];
 }
 
 function parseResult(raw: Record<string, unknown> | undefined): StreamResult | null {
@@ -219,6 +454,19 @@ function extractFilePath(parameters: unknown): string | undefined {
 	}
 	return undefined;
 }
+
+function extractCommand(parameters: unknown): string | undefined {
+	if (!parameters || typeof parameters !== "object") return undefined;
+	const p = parameters as Record<string, unknown>;
+	for (const key of ["CommandLine", "Command", "Cmd"]) {
+		const v = p[key];
+		if (typeof v === "string" && v.trim()) return v.trim();
+	}
+	return undefined;
+}
+
+/** Upper bound for the live-streamed agent text; the final result keeps the full response. */
+const STREAM_TEXT_CAP = 4000;
 
 function runAgy(opts: RunOptions): Promise<StreamResult> {
 	return new Promise((resolvePromise, reject) => {
@@ -261,10 +509,34 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 		let stderr = "";
 		let result: StreamResult | null = null;
 		let stepText = "";
-		let toolSteps = 0;
+		const warnings: string[] = [];
 		const files = new Set<string>();
 		const commands = new Set<string>();
-		const warnings: string[] = [];
+		const steps: StepRecord[] = [];
+		const stepByIndex = new Map<number, StepRecord>();
+		const startedAt = Date.now();
+		const live: LiveActivity = { step: 0, phase: "thinking", stepsDone: 0, filesTouched: [], elapsedMs: 0 };
+
+		const refreshLive = () => {
+			live.stepsDone = steps.length;
+			live.filesTouched = [...files];
+			live.elapsedMs = Date.now() - startedAt;
+			opts.onActivity?.(live);
+		};
+
+		const pushStream = (overrides?: Partial<LiveActivity>) => {
+			if (!opts.onUpdate) return;
+			if (overrides) Object.assign(live, overrides);
+			refreshLive();
+			const line = activityLine(live);
+			const body =
+				stepText.length > STREAM_TEXT_CAP ? stepText.slice(-STREAM_TEXT_CAP) + " …" : stepText;
+			opts.onUpdate({
+				content: [{ type: "text", text: body ? `${line}\n\n${body}` : line }],
+				details: { streaming: true, status: live.phase, ...liveDetail(live) },
+			});
+		};
+		const streamPush = debounce(() => pushStream(), 120);
 
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
@@ -286,22 +558,48 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 				if (ev.event === "step_update") {
 					const s = ev.step_update as any;
 					if (s?.step_type === "tool") {
-						if (s.tool_name) toolSteps++;
 						const info = s.tool_info as any;
-						if (info?.name === "run_command") {
-							const cl = info.parameters?.CommandLine ?? info.parameters?.Command;
-							if (typeof cl === "string" && cl.trim()) commands.add(cl.trim());
-						} else if (WRITE_TOOLS.has(info?.name)) {
-							const fp = extractFilePath(info.parameters);
-							if (fp) files.add(fp);
+						const tool = typeof info?.name === "string" ? info.name : undefined;
+						const params = info?.parameters as Record<string, unknown> | undefined;
+						const file = tool && params !== undefined ? extractFilePath(params) : undefined;
+						const command = tool === "run_command" && params !== undefined ? extractCommand(params) : undefined;
+						live.tool = tool;
+						live.file = file ? toDisplayPath(file, opts.workspace) : undefined;
+						live.command = command;
+						live.phase = "tool";
+						const index = typeof s.step_index === "number" ? s.step_index : live.step;
+						live.step = index;
+						if (s.state === "ACTIVE") {
+							// Show the live action immediately (e.g. `✎ src/main.ts`).
+							streamPush.flush();
+						} else {
+							// Tool finished: record it once per step index.
+							let rec = stepByIndex.get(index);
+							if (!rec) {
+								rec = { index, tool: tool ?? "tool", file: live.file, command: live.command, state: "done" };
+								stepByIndex.set(index, rec);
+								steps.push(rec);
+							} else {
+								rec.state = "done";
+								if (live.file) rec.file = live.file;
+								if (live.command) rec.command = live.command;
+							}
+							if (tool === "run_command" && command) commands.add(command);
+							if (file) files.add(file);
+							streamPush.flush();
 						}
-					}
-					if (s?.step_type === "agent_response" && typeof s.text_delta === "string" && s.text_delta) {
-						stepText += s.text_delta;
-						opts.onUpdate?.({
-							content: [{ type: "text", text: stepText }],
-							details: { streaming: true, toolSteps },
-						});
+					} else if (s?.step_type === "agent_response") {
+						if (typeof s.step_index === "number") live.step = s.step_index;
+						if (typeof s.text_delta === "string" && s.text_delta) {
+							stepText += s.text_delta;
+							live.phase = "writing";
+						} else {
+							live.phase = "thinking";
+						}
+						streamPush.schedule();
+					} else if (s?.step_type && typeof s.step_index === "number") {
+						live.step = s.step_index;
+						streamPush.schedule();
 					}
 				} else if (ev.event === "result") {
 					result = parseResult(ev.result as Record<string, unknown>);
@@ -325,6 +623,7 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 
 		child.on("error", (err) => {
 			sig?.removeEventListener("abort", onAbort);
+			streamPush.cancel();
 			const exists = existsSync(opts.workspace);
 			reject(
 				new Error(
@@ -336,6 +635,7 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 
 		child.on("close", (code) => {
 			sig?.removeEventListener("abort", onAbort);
+			streamPush.cancel();
 			if (sig?.aborted) {
 				reject(new Error("agy run aborted"));
 				return;
@@ -363,7 +663,8 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 				}
 			}
 			r.warnings = warnings.length ? warnings : undefined;
-			r.tool_steps = toolSteps;
+			r.tool_steps = steps.length;
+			r.steps = steps;
 			r.files_written = files.size ? [...files].sort() : undefined;
 			r.commands_run = commands.size
 				? [...commands].map((c) => (c.length > 160 ? c.slice(0, 157) + "..." : c))
@@ -381,7 +682,7 @@ function runAgy(opts: RunOptions): Promise<StreamResult> {
 
 function buildResult(
 	r: StreamResult,
-	opts: { workspace: string; model: string; allowCommands: boolean }
+	opts: { workspace: string; model: string; allowCommands: boolean; steps?: StepRecord[] }
 ): { content: AgentToolResult<unknown>["content"]; details: Record<string, unknown> } {
 	const meta: string[] = [];
 	if (r.conversation_id) meta.push(`conversation_id=${r.conversation_id}`);
@@ -393,6 +694,11 @@ function buildResult(
 	if (r.warnings?.length) {
 		text += `\n\n⚠️ ${r.warnings.join(" ")}`;
 	}
+
+	// Run log: the terminal trail of every tool step the agent performed.
+	const steps = opts.steps ?? [];
+	const log = buildRunLog(steps);
+	if (log.length) text += `\n\nRun log (${steps.length} steps):\n${log.join("\n")}`;
 
 	// Evidence the orchestrator can verify against.
 	const evidence: string[] = [];
@@ -422,11 +728,12 @@ function buildResult(
 			toolSteps: r.tool_steps ?? 0,
 			model: opts.model,
 			allowCommands: opts.allowCommands,
+			steps,
 		},
 	};
 }
 
-// Shared execute used by all three tools.
+// Shared execute used by all three single-run tools.
 async function executeAgy(
 	_toolCallId: string,
 	params: {
@@ -446,15 +753,17 @@ async function executeAgy(
 	ctx: ExtensionContext
 ): Promise<AgentToolResult<Record<string, unknown>>> {
 	const workspace = params.workspace ? resolveWorkspace(params.workspace, ctx.cwd) : ctx.cwd;
-	if (ctx.hasUI) ctx.ui.setStatus("agy", `agy: ${params.prompt.slice(0, 40)}…`);
+	const model = params.model || config.model;
+	const allowCommands = params.allowCommands ?? config.defaultAllowCommands;
+	if (ctx.hasUI) ctx.ui.setStatus("agy", `agy ⟳ ${truncate(params.prompt, 50)}…`);
 	try {
 		const r = await runAgy({
 			prompt: params.prompt,
 			workspace,
-			model: params.model || config.model,
+			model,
 			effort: params.effort,
 			agent: params.agent,
-			allowCommands: params.allowCommands ?? config.defaultAllowCommands,
+			allowCommands,
 			continueConv: params.continueConv ?? false,
 			conversation: params.conversation,
 			jsonSchema: params.jsonSchema,
@@ -462,14 +771,201 @@ async function executeAgy(
 			signal,
 			onUpdate,
 		});
-		return buildResult(r, {
-			workspace,
-			model: params.model || config.model,
-			allowCommands: params.allowCommands ?? config.defaultAllowCommands,
-		});
+		// Final one-shot status before the footer clears.
+		if (ctx.hasUI)
+			ctx.ui.setStatus("agy", `agy ✓ done in ${formatDuration(r.duration_seconds ? r.duration_seconds * 1000 : 0)}`);
+		return buildResult(r, { workspace, model, allowCommands, steps: r.steps ?? [] });
 	} finally {
-		if (ctx.hasUI) ctx.ui.setStatus("agy", "");
+		if (ctx.hasUI) ctx.ui.setStatus("agy", undefined);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Fleet (fan-out) executor
+// ---------------------------------------------------------------------------
+
+interface FleetTaskParams {
+	id?: string;
+	task: string;
+	workspace?: string;
+	model?: string;
+	effort?: "low" | "medium" | "high";
+	agent?: string;
+	allowCommands?: boolean;
+	continueConv?: boolean;
+	jsonSchema?: string;
+	timeout?: string;
+}
+
+interface FleetCallParams extends FleetTaskParams {
+	tasks: FleetTaskParams[];
+	concurrency?: number;
+}
+
+async function executeFleet(
+	_toolCallId: string,
+	params: FleetCallParams,
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback | undefined,
+	ctx: ExtensionContext
+): Promise<AgentToolResult<Record<string, unknown>>> {
+	const tasks = Array.isArray(params.tasks) ? params.tasks : [];
+	if (tasks.length === 0) throw new Error("agy_fleet: provide at least one task in `tasks`");
+	if (tasks.length > MAX_FLEET_TASKS)
+		throw new Error(`agy_fleet: too many tasks (${tasks.length}); max is ${MAX_FLEET_TASKS}`);
+	const concurrency = clampConcurrency(params.concurrency ?? config.fleetConcurrency);
+
+	const lanes: FleetLaneState[] = tasks.map((t, i) => ({
+		id: t.id?.trim() || `t${i + 1}`,
+		task: t.task,
+		workspace: t.workspace ? resolveWorkspace(t.workspace, ctx.cwd) : ctx.cwd,
+		status: "queued",
+		live: { step: 0, phase: "thinking", stepsDone: 0, filesTouched: [], elapsedMs: 0 },
+	}));
+
+	const boardPush = debounce(() => {
+		if (!onUpdate) return;
+		const board = formatFleetBoard(lanes, Date.now());
+		onUpdate({
+			content: [{ type: "text", text: board.join("\n") }],
+			details: {
+				streaming: true,
+				status: "running",
+				lanes: lanes.map((l) => ({
+					id: l.id,
+					status: l.status,
+					activity: liveDetail(l.live),
+					error: l.error,
+				})),
+			},
+		});
+		if (ctx.hasUI) {
+			const active = lanes.filter((l) => l.status === "running" || l.status === "queued").length;
+			const done = lanes.filter((l) => l.status === "done").length;
+			const bad = lanes.length - active - done;
+			ctx.ui.setStatus(
+				"agy",
+				`agy_fleet ${done}/${lanes.length} done${bad ? ` · ${bad} failed` : ""}${active ? ` · ${active} active` : ""}`
+			);
+		}
+	}, 250);
+
+	const runLane = async (lane: FleetLaneState, t: FleetTaskParams) => {
+		lane.status = "running";
+		lane.startedAt = Date.now();
+		boardPush.schedule();
+		try {
+			const r = await runAgy({
+				prompt: lane.task,
+				workspace: lane.workspace,
+				model: t.model || params.model,
+				effort: t.effort || params.effort,
+				agent: t.agent || params.agent,
+				allowCommands: t.allowCommands ?? params.allowCommands ?? config.defaultAllowCommands,
+				continueConv: t.continueConv ?? false,
+				jsonSchema: t.jsonSchema,
+				timeout: t.timeout || params.timeout || config.timeout,
+				signal,
+				onActivity: (live) => {
+					lane.live = live;
+					boardPush.schedule();
+				},
+			});
+			lane.result = r;
+			lane.status = "done";
+		} catch (e) {
+			lane.status = signal?.aborted ? "aborted" : "failed";
+			lane.error = (e as Error).message;
+		}
+		lane.endedAt = Date.now();
+		boardPush.flush();
+	};
+
+	const jobs = lanes.map((l, i) => ({ lane: l, task: tasks[i]! }));
+	let next = 0;
+	const workers = Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+		while (next < jobs.length) {
+			if (signal?.aborted) break;
+			const job = jobs[next++]!;
+			await runLane(job.lane, job.task);
+		}
+	});
+	await Promise.allSettled(workers);
+	boardPush.cancel();
+	if (signal?.aborted) throw new Error("agy_fleet aborted");
+
+	const summary = summarizeFleet(lanes);
+	const now = Date.now();
+	const lines: string[] = [
+		`**agy_fleet — ${summary.done}/${summary.total} lanes succeeded** ` +
+			`(${summary.total} lanes · ${formatDuration(summary.elapsedMs)} · concurrency ${concurrency})`,
+		"",
+	];
+	for (const lane of lanes) {
+		const dur = formatDuration((lane.endedAt ?? now) - (lane.startedAt ?? now));
+		if (lane.status === "done" && lane.result) {
+			const bits = [
+				`${lane.result.files_written?.length ?? 0} files`,
+				`${lane.result.commands_run?.length ?? 0} commands`,
+				dur,
+			];
+			lines.push(`- **[${lane.id}]** ✓ done · ${bits.join(" · ")}`);
+			const resp = truncate((lane.result.response ?? "(no response)").trim(), 600);
+			lines.push(`  ${resp.replace(/\s*\n+\s*/g, " ")}`);
+		} else {
+			const why =
+				lane.status === "aborted"
+					? "aborted"
+					: lane.error
+						? truncate(lane.error, 120)
+						: "failed";
+			lines.push(`- **[${lane.id}]** ✗ ${lane.status} · ${why} · ${dur}`);
+			lines.push(`  task: ${truncate(lane.task.replace(/\s+/g, " "), 160)}`);
+		}
+	}
+	const withEvidence = lanes.filter(
+		(l) => l.status === "done" && l.result && (l.result.files_written?.length || l.result.commands_run?.length)
+	);
+	if (withEvidence.length) {
+		lines.push("", "Evidence —");
+		for (const lane of withEvidence) {
+			const parts: string[] = [];
+			if (lane.result?.files_written?.length) parts.push(`files: ${lane.result.files_written.join(", ")}`);
+			if (lane.result?.commands_run?.length) parts.push(`commands: ${lane.result.commands_run.join(" | ")}`);
+			lines.push(`  [${lane.id}] ${parts.join("   ")}`);
+		}
+	}
+	lines.push(
+		"",
+		`(${summary.total} lanes · ok=${summary.done} failed=${summary.failed} aborted=${summary.aborted} · ${formatDuration(summary.elapsedMs)})`
+	);
+
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: {
+			status: "done",
+			lanes: lanes.map((l) => ({
+				id: l.id,
+				task: l.task,
+				workspace: l.workspace,
+				status: l.status,
+				error: l.error,
+				response: l.result?.response,
+				files_written: l.result?.files_written,
+				commands_run: l.result?.commands_run,
+				conversation_id: l.result?.conversation_id,
+				num_turns: l.result?.num_turns,
+				duration_seconds: l.result?.duration_seconds,
+				usage: l.result?.usage,
+			})),
+			succeeded: summary.done,
+			failed: summary.failed,
+			aborted: summary.aborted,
+			total: lanes.length,
+			concurrency,
+			duration_seconds: +(summary.elapsedMs / 1000).toFixed(1),
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +985,8 @@ const agyRun = defineTool({
 		"auto-allowed; shell commands are enabled only when allowCommands is true (default comes " +
 		"from pi-agy config). If the agent returns no text, it usually means a tool call was " +
 		"auto-denied — retry with allowCommands=true. " +
-		"Returns the agent's response plus metadata (conversation_id, usage, evidence). " +
+		"While it runs, live status shows the current step, the file being written/edited, and " +
+		"commands being run; the result includes a full run log plus evidence (files, commands). " +
 		"Set continueConv true or pass conversation to keep the same agent conversation going.",
 	parameters: Type.Object({
 		prompt: Type.String({
@@ -560,7 +1057,8 @@ const agyExplore = defineTool({
 		"Delegate a read-only exploration task to the Antigravity (agy) agent (Gemini). " +
 		"Use to map, explain, or investigate a codebase, a directory, or a chunk of code without " +
 		"modifying anything. Shell commands are never enabled for this tool; file reads inside " +
-		"the workspace are allowed. Returns the agent's findings.",
+		"the workspace are allowed. Live status shows the step and file it is inspecting; the " +
+		"result includes a run log. Returns the agent's findings.",
 	parameters: Type.Object({
 		prompt: Type.String({
 			description:
@@ -592,7 +1090,9 @@ const agyCode = defineTool({
 		"Use for writing or editing files, implementing a feature, or generating code in the workspace. " +
 		"File reads/writes in the workspace are allowed. Shell commands are enabled by default " +
 		`(allowCommands defaults to ${config.defaultAllowCommands}; set false for pure file tasks). ` +
-		"If the agent returns no text it was probably denied permission — retry with allowCommands=true.",
+		"Live status shows the step and file the agent is writing/editing in real time; the " +
+		"result includes a run log plus evidence. If the agent returns no text it was probably " +
+		"denied permission — retry with allowCommands=true.",
 	parameters: Type.Object({
 		prompt: Type.String({
 			description:
@@ -625,6 +1125,59 @@ const agyCode = defineTool({
 		),
 });
 
+const fleetTaskSchema = Type.Object({
+	id: Type.Optional(Type.String({ description: "Lane id shown in status/results (default: t1, t2, …)." })),
+	task: Type.String({ description: "The prompt/instruction for this agy lane." }),
+	workspace: Type.Optional(
+		Type.String({ description: "Directory to run this lane in (defaults to cwd)." })
+	),
+	model: Type.Optional(Type.String({ description: `Model slug (default: ${config.model}).` })),
+	effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+	agent: Type.Optional(Type.String({ description: "agy agent to use for this lane." })),
+	allowCommands: Type.Optional(
+		Type.Boolean({ description: `Allow shell commands for this lane (default: ${config.defaultAllowCommands}).` })
+	),
+	continueConv: Type.Optional(
+		Type.Boolean({ description: "Continue the most recent conversation in this lane's workspace." })
+	),
+	jsonSchema: Type.Optional(Type.String({ description: "JSON schema string to constrain this lane's output." })),
+	timeout: Type.Optional(Type.String({ description: `Max wait for this lane (default: ${config.timeout}).` })),
+});
+
+// Fan-out preset: run several agy agents in parallel with a live per-lane board.
+const agyFleet = defineTool({
+	name: "agy_fleet",
+	label: "Agy Fleet (fan-out)",
+	description:
+		"Fan out multiple Antigravity (agy) agents on a list of tasks and run them in parallel " +
+		"with bounded concurrency. Each lane is its own agy agent with its own tool loop and " +
+		"workspace. A live board in the conversation shows every lane: current step, the file " +
+		"being written/edited, the command running, and done/failed state — then the final " +
+		"result reports per-lane status, response, files, and commands so the orchestrator can " +
+		"verify each lane. Use to parallelize independent subtasks (edit several modules, run " +
+		"separate research passes, scaffold multiple components). All lanes sharing one " +
+		"workspace write to the same directory — prefer distinct workspaces (or distinct files) " +
+		"to avoid conflicting edits.",
+	parameters: Type.Object({
+		tasks: Type.Array(fleetTaskSchema, {
+			description: "One entry per agy lane (2–24). Each needs a self-contained `task` prompt.",
+		}),
+		concurrency: Type.Optional(
+			Type.Integer({
+				description: `Max parallel agy agents (default: ${config.fleetConcurrency}, range 1–${MAX_FLEET_CONCURRENCY}).`,
+			})
+		),
+		model: Type.Optional(Type.String({ description: `Default model for all lanes (default: ${config.model}).` })),
+		effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+		agent: Type.Optional(Type.String({ description: "Default agy agent for all lanes." })),
+		allowCommands: Type.Optional(
+			Type.Boolean({ description: `Default allowCommands for all lanes (default: ${config.defaultAllowCommands}).` })
+		),
+		timeout: Type.Optional(Type.String({ description: `Default max wait per lane (default: ${config.timeout}).` })),
+	}),
+	execute: executeFleet,
+});
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -633,6 +1186,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyRun);
 	pi.registerTool(agyExplore);
 	pi.registerTool(agyCode);
+	pi.registerTool(agyFleet);
 
 	// Pi is the orchestrator: when it delegates work to the agy agent tools, it
 	// must verify the outcome itself before reporting success. This guidance is
@@ -640,8 +1194,9 @@ export default function (pi: ExtensionAPI) {
 	// need; there is nothing to configure manually.
 	const ORCHESTRATOR_GUIDE = [
 		"## Orchestration with the agy tools",
-		"You are the orchestrator. Use agy, agy_code, and agy_explore to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity Gemini agent instead of doing them inline.",
-		"After a delegated agy run, VERIFY the outcome yourself before reporting success:",
+		"You are the orchestrator. Use agy, agy_code, agy_explore, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity Gemini agent instead of doing them inline.",
+		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did.",
+		"After a delegated agy run (including each agy_fleet lane), VERIFY the outcome yourself before reporting success:",
 		"- files the agent claims to have written exist and contain what was asked (use read / ls / grep),",
 		"- commands or tests the agent claims to have run actually pass (re-run them with bash when cheap),",
 		"- exploration answers are grounded in the actual files (spot-check with read/grep).",
@@ -666,7 +1221,8 @@ export default function (pi: ExtensionAPI) {
 			const msg =
 				`agy bin=${config.bin}\nmodel=${config.model}\neffort=${config.effort}\n` +
 				`allowCommands=${config.defaultAllowCommands}\n` +
-				`timeout=${config.timeout}\nconfig=${config.configFile}\n\n${models}`;
+				`timeout=${config.timeout}\nfleetConcurrency=${config.fleetConcurrency}\n` +
+				`config=${config.configFile}\n\n${models}`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "info");
 			else console.log(msg);
 		},

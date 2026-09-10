@@ -35,7 +35,7 @@ import {
 // Shapes
 // ---------------------------------------------------------------------------
 
-export type AgyPreset = "run" | "explore" | "code";
+export type AgyPreset = "run" | "explore" | "code" | "vision";
 
 export interface AgyMeta {
 	preset: AgyPreset;
@@ -51,6 +51,10 @@ export interface AgyMeta {
 
 export interface AgyCallArgs {
 	prompt?: string;
+	/** agy_vision: image files to inspect. */
+	images?: string[];
+	/** agy_vision: page URL to screenshot before inspecting. */
+	url?: string;
 	workspace?: string;
 	model?: string;
 	effort?: string;
@@ -141,6 +145,7 @@ const PRESETS: Record<AgyPreset, { title: string; tag: string; readOnly: boolean
 	run: { title: "agy", tag: "delegate", readOnly: false },
 	explore: { title: "agy_explore", tag: "read-only", readOnly: true },
 	code: { title: "agy_code", tag: "implement", readOnly: false },
+	vision: { title: "agy_vision", tag: "image", readOnly: true },
 };
 
 const RESPONSE_COLLAPSED_LINES = 34;
@@ -349,6 +354,11 @@ export function singleCallLines(
 	if (args.model) meta.push(args.model);
 	if (args.effort) meta.push(`${args.effort} effort`);
 	if (args.agent) meta.push(`agent ${args.agent}`);
+	if (args.images?.length) {
+		const n = args.images.length;
+		meta.push(`${n} image${n === 1 ? "" : "s"}`);
+	}
+	if (args.url) meta.push(`screenshot ${args.url}`);
 	if (args.timeout) meta.push(`timeout ${args.timeout}`);
 	if (args.workspace) meta.push(args.workspace);
 	if (meta.length) {

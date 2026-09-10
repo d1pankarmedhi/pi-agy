@@ -1,10 +1,11 @@
 # pi-agy
 
-Delegate low-level tasks — writing code, exploring a codebase, research passes —
-to Google Antigravity's [agy CLI](https://antigravity.google/docs/cli/headless/)
-running a Gemini agent. Pi stays the **orchestrator**: once you ask for it, it
-farms out subtasks to agy (`agy`, `agy_code`, `agy_explore`, `agy_fleet` tools),
-then **verifies** the agent's work itself before reporting success.
+Delegate low-level tasks — writing code, exploring a codebase, research passes,
+inspecting screenshots and images — to Google Antigravity's
+[agy CLI](https://antigravity.google/docs/cli/headless/) running a Gemini agent.
+Pi stays the **orchestrator**: once you ask for it, it farms out subtasks to agy
+(`agy`, `agy_code`, `agy_explore`, `agy_vision`, `agy_fleet` tools), then
+**verifies** the agent's work itself before reporting success.
 
 > **Opt-in.** pi-agy never delegates on its own. Pi only calls the agy tools when
 you explicitly ask for agy in that request (e.g. “use agy”, “delegate this to
@@ -59,6 +60,7 @@ creates files anywhere.
 | `agy`         | General worker. Full control: workspace, model, effort, agent, `allowCommands`, `continueConv`, `conversation`, JSON schema, timeout. |
 | `agy_code`    | Implementation tasks. Writes/edits files in the workspace; commands enabled by default.            |
 | `agy_explore` | Read-only exploration. Never enables shell commands; steers the agent to `list_dir`/`view_file`/`grep_search`. |
+| `agy_vision`  | **Images & screenshots.** Read-only by default: inspects image files with the multimodal agent (screenshots, mockups, diagrams, charts, scanned pages). Pass a `url` and it captures a headless-Chrome screenshot first (implies `allowCommands`). |
 | `agy_fleet`   | **Fan-out**: run 2–24 independent subtasks as parallel agy agents (bounded concurrency, default 3) with a live per-lane board and per-lane evidence. |
 
 All tools stream a live status card and return the agent's response plus
@@ -199,6 +201,66 @@ tool params win over both):
 > (`gemini-3.8-flash-high`), and agy rejects mismatches like
 > `gemini-3.8-flash-medium` + `--effort high`. The extension auto-fixes gemini
 > slugs to match the requested effort (see `matchEffort`).
+
+## Images and screenshots (`agy_vision`)
+
+`agy_vision` delegates image work to agy's multimodal agent. The agent opens the
+actual pixels with its `view_file` tool — it does not guess from the filename.
+
+**Key constraint:** pi-agy passes agy *text only* (the agy CLI has no image
+flag and pi cannot attach images inline), so images are delegated **by path**.
+The files must exist where the agent can reach them — inside the workspace, or
+anywhere with `allowNonWorkspaceAccess` enabled in
+`~/.gemini/antigravity-cli/settings.json`.
+
+### Inspect an existing image (read-only)
+
+```
+agy_vision({
+  images: ["screenshots/home.png", "screenshots/pricing.png"],
+  prompt: "List every visual regression versus a standard SaaS pricing page: spacing, alignment, contrast, hierarchy.",
+  jsonSchema: '{"type":"object","properties":{"issues":{"type":"array","items":{"type":"string"}}}}',
+})
+```
+
+Read-only is the default: no `--dangerously-skip-permissions`, and the prompt
+carries a guard telling the agent that shell commands are denied so it sticks to
+`view_file`/`list_dir`/`grep_search`. `jsonSchema` is the recommended way to get
+structured findings back (UI review lists, OCR field extraction, chart→data).
+
+### Screenshot a page, then review it
+
+```
+agy_vision({ url: "http://localhost:3000", prompt: "Check the hero section for overflow and contrast issues." })
+```
+
+The agent drives headless Chrome/Edge (`--headless=new --screenshot=…
+--window-size=1280,800`), saves the PNG in the workspace, and inspects the
+captured file — the returned run log shows the exact command it used.
+Supplying `url` implies `allowCommands=true` (the capture needs a shell); pass
+`allowCommands: false` explicitly to override.
+
+### Generate or edit images
+
+Generation needs a shell, so use `agy_code` (or `agy`) with
+`allowCommands=true`. On a machine without ImageMagick/PIL the agent still
+succeeds by writing a small Node PNG encoder or by rendering HTML/SVG through
+headless Chrome. `ffmpeg` is the fallback for format conversion and video
+frames.
+
+### Caveats
+
+- **Verify image outputs yourself.** `files_written` is parsed from agy's
+  write-tool calls, so a PNG produced by a *shell command* (headless Chrome,
+  a Node script) does **not** appear in the evidence list. Check the file
+  exists and is a valid PNG (`read`, `ls`, or a signature/size check) before
+  reporting success.
+- **Use a `gemini-*` model slug** (`gemini-3.8-flash-high` by default). The
+  claude/gpt-oss entries in `agy models` are not the vision path.
+- Image reads appear in the run log as `▤`/file steps; a pure read never shows
+  up in `files_written`.
+- Vision runs need a few steps to locate and open the file: expect ~10–40s and
+  a few thousand tokens per image question.
 
 ## Orchestration pattern (pi = orchestrator, agy = subagent) — opt-in
 

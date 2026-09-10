@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **New `agy_vision` tool — image and screenshot tasks.** pi-agy can now
+  delegate image work to agy's multimodal agent:
+  - Inspect screenshots, UI mockups, diagrams, charts, and scanned pages by
+    passing `images: ["shot.png", …]`; the agent opens the actual pixels with
+    its `view_file` tool (never guessing from the filename).
+  - Pass `url` to have the agent capture a headless-Chrome/Edge screenshot of a
+    running page first, then inspect the captured file. `url` implies
+    `allowCommands=true` (explicit `allowCommands` still wins).
+  - **Read-only by default** — no `--dangerously-skip-permissions`; the prompt
+    carries a no-shell guard so the agent uses `view_file`/`list_dir`/
+    `grep_search` instead of attempting (auto-denied) shell calls.
+  - Pair with `jsonSchema` for structured extraction (UI review findings, OCR
+    fields, chart→data).
+  - New `src/vision.ts` (`buildVisionPrompt`, `normalizeImages`, `isImagePath`,
+    `resolveVisionAllowCommands`) plus a `vision` TUI preset that shows the
+    image count and screenshot URL in the call card.
+  - Injected opt-in guidance now routes image/screenshot subtasks to
+    `agy_vision`.
+
 - **Rich, responsive TUI cards for every agy tool.** Instead of a single
   status line, each tool now renders a purpose-built card via `renderCall` /
   `renderResult`:

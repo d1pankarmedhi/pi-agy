@@ -3,6 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { config, MAX_FLEET_CONCURRENCY } from "./config.ts";
 import { executeAgy, executeFleet, type FleetTaskParams } from "./executors.ts";
 import { fleetRenderers, singleRenderers } from "./render.ts";
+import { buildVisionPrompt, resolveVisionAllowCommands } from "./vision.ts";
 
 /**
  * Tool definitions (schemas + labels) wired to the shared executors.
@@ -167,6 +168,91 @@ export const agyCode = defineTool({
 			ctx
 		),
 	...singleRenderers("code"),
+});
+
+// Image preset: inspect screenshots/diagrams/photos with the multimodal agent,
+// read-only by default, with an optional headless-Chrome screenshot step.
+export const agyVision = defineTool({
+	name: "agy_vision",
+	label: "Agy Vision",
+	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy / the Antigravity agent for the current task. " +
+		"Delegate an image task to the Antigravity (agy) agent (Gemini, multimodal). " +
+		"Use to inspect screenshots, UI mockups, diagrams, charts, scanned pages or photos: pass the " +
+		"image file path(s) in `images` and the question in `prompt`. The agent opens the actual " +
+		"pixels with its image-viewing tool and answers from what it sees. Read-only by default " +
+		"(no shell commands). Pass `url` to have it capture a headless-Chrome screenshot of a web " +
+		"page first (this implies allowCommands=true) — good for reviewing a running dev server. " +
+		"Images cannot be attached inline: they must exist as files the agent can reach (inside the " +
+		"workspace). Combine with `jsonSchema` for structured extraction (e.g. UI review findings). " +
+		"Note: files produced by shell commands do not appear in the files_written evidence, so " +
+		"verify generated screenshots yourself.",
+	parameters: Type.Object({
+		prompt: Type.String({
+			description: "What to determine from the image(s), e.g. 'List every layout bug and contrast issue you can see'.",
+		}),
+		images: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Image file path(s) to inspect, relative to the workspace or absolute, e.g. [\"shot.png\"].",
+			})
+		),
+		url: Type.Optional(
+			Type.String({
+				description:
+					"Optional web page URL: the agent screenshots it with headless Chrome first, then inspects it. Implies allowCommands.",
+			})
+		),
+		workspace: Type.Optional(Type.String({ description: "Directory to run in (defaults to cwd)." })),
+		model: Type.Optional(
+			Type.String({
+				description: `Model slug — use a gemini-* slug for vision (default: ${config.model}).`,
+			})
+		),
+		effort: Type.Optional(
+			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
+		),
+		allowCommands: Type.Optional(
+			Type.Boolean({
+				description:
+					"Allow shell commands (needed for screenshots or image generation). " +
+					"Default: false, or true when `url` is set.",
+			})
+		),
+		continueConv: Type.Optional(
+			Type.Boolean({ description: "Continue the previous agy conversation for this workspace." })
+		),
+		jsonSchema: Type.Optional(
+			Type.String({ description: "JSON schema string to constrain the agent's structured output." })
+		),
+		timeout: Type.Optional(Type.String({ description: `Max wait (default: ${config.timeout}).` })),
+	}),
+	execute: (id, params, signal, onUpdate, ctx) => {
+		const allowCommands = resolveVisionAllowCommands(params.allowCommands, params.url);
+		return executeAgy(
+			id,
+			{
+				prompt: buildVisionPrompt({
+					prompt: params.prompt,
+					images: params.images,
+					url: params.url,
+					allowCommands,
+				}),
+				workspace: params.workspace,
+				model: params.model,
+				effort: params.effort,
+				allowCommands,
+				continueConv: params.continueConv,
+				jsonSchema: params.jsonSchema,
+				timeout: params.timeout,
+				preset: "vision",
+			},
+			signal,
+			onUpdate,
+			ctx
+		);
+	},
+	...singleRenderers("vision"),
 });
 
 const fleetTaskSchema = Type.Object({

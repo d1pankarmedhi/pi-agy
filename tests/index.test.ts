@@ -47,9 +47,9 @@ function registerWithStub() {
 	return { tools, handlers, commands };
 }
 
-test("the extension registers all four agy tools with custom TUI cards", () => {
+test("the extension registers all five agy tools with custom TUI cards", () => {
 	const { tools } = registerWithStub();
-	for (const name of ["agy", "agy_explore", "agy_code", "agy_fleet"]) {
+	for (const name of ["agy", "agy_explore", "agy_code", "agy_vision", "agy_fleet"]) {
 		const tool = tools.get(name);
 		assert.ok(tool, `tool ${name} was not registered`);
 		assert.equal(typeof tool!.execute, "function", `${name} needs execute`);
@@ -68,6 +68,7 @@ test("injected guidance makes the agy tools opt-in", async () => {
 	assert.match(out.systemPrompt, /do NOT call any agy tool/i);
 	assert.match(out.systemPrompt, /explicitly asks/i);
 	assert.match(out.systemPrompt, /off by default/i);
+	assert.match(out.systemPrompt, /agy_vision/);
 	// The old unconditional "you are the orchestrator, use agy" instruction must be gone.
 	assert.doesNotMatch(out.systemPrompt, /You are the orchestrator\. Use agy/);
 });

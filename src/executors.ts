@@ -31,7 +31,7 @@ export interface AgyToolParams {
 	preset?: AgyPreset;
 }
 
-/** Shared execute used by all three single-run tools. */
+/** Shared execute used by all single-run tools (agy, agy_explore, agy_code, agy_vision). */
 export async function executeAgy(
 	_toolCallId: string,
 	params: AgyToolParams,

@@ -19,10 +19,11 @@
  *     concurrency) and publishes a live per-lane board, then returns per-lane
  *     evidence for verification.
  *
- * Module layout (src/): config, model, paths, status (live activity state),
- * ui (width-safe card primitives), render (TUI cards), fleet (fan-out board),
- * runner (agy stream parsing), results (tool result assembly), executors
- * (shared tool execution), tools (tool definitions + renderers).
+ * Module layout (src/): config, model, paths, vision (image-prompt building),
+ * status (live activity state), ui (width-safe card primitives), render (TUI
+ * cards), fleet (fan-out board), runner (agy stream parsing), results (tool
+ * result assembly), executors (shared tool execution), tools (tool definitions
+ * + renderers).
  * This entry file only wires everything into the extension runtime.
  *
  * Requirements:
@@ -50,7 +51,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { config } from "./src/config.ts";
 import { runAgy } from "./src/runner.ts";
-import { agyCode, agyExplore, agyFleet, agyRun } from "./src/tools.ts";
+import { agyCode, agyExplore, agyFleet, agyRun, agyVision } from "./src/tools.ts";
 
 // Re-export the public surface (helper functions/types used by tests and
 // external consumers).
@@ -97,7 +98,16 @@ export type { RenderComponent, ThemeLike } from "./src/ui.ts";
 export { buildResult } from "./src/results.ts";
 export { executeAgy, executeFleet } from "./src/executors.ts";
 export type { AgyToolParams, FleetCallParams, FleetTaskParams } from "./src/executors.ts";
-export { agyCode, agyExplore, agyFleet, agyRun } from "./src/tools.ts";
+export { agyCode, agyExplore, agyFleet, agyRun, agyVision } from "./src/tools.ts";
+export {
+	buildVisionPrompt,
+	isImagePath,
+	NO_SHELL_GUIDE,
+	normalizeImages,
+	resolveVisionAllowCommands,
+	VISION_GUIDE,
+} from "./src/vision.ts";
+export type { VisionPromptInput } from "./src/vision.ts";
 export { runAgy } from "./src/runner.ts";
 export type { RunOptions, StreamResult } from "./src/runner.ts";
 
@@ -109,6 +119,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyRun);
 	pi.registerTool(agyExplore);
 	pi.registerTool(agyCode);
+	pi.registerTool(agyVision);
 	pi.registerTool(agyFleet);
 
 	// The agy tools are OPT-IN: the injected guidance forbids delegating unless
@@ -116,10 +127,11 @@ export default function (pi: ExtensionAPI) {
 	// allowed to delegate. Injected automatically on every agent start.
 	const AGY_GUIDE = [
 		"## Antigravity (agy) tools — opt-in only",
-		"agy, agy_code, agy_explore, and agy_fleet delegate work to Google Antigravity's Gemini agent. They are OFF BY DEFAULT: do NOT call any agy tool (and do not otherwise invoke the Antigravity agent) unless the user explicitly asks for it in the current request — e.g. \"use agy\", \"delegate this to agy\", \"run agy_fleet\", \"use the agy tools\", or \"use Antigravity\".",
+		"agy, agy_code, agy_explore, agy_vision, and agy_fleet delegate work to Google Antigravity's Gemini agent. They are OFF BY DEFAULT: do NOT call any agy tool (and do not otherwise invoke the Antigravity agent) unless the user explicitly asks for it in the current request — e.g. \"use agy\", \"delegate this to agy\", \"run agy_fleet\", \"use the agy tools\", or \"use Antigravity\".",
 		"Do not infer permission from incidental words. \"Delegate\", \"parallelize\", \"fan out\", \"explore\", \"investigate\", or \"subtasks\" on their own do NOT mean \"use agy\": handle those with your normal tools (or ask the user which they want). An earlier request to use agy does not carry over to later turns.",
 		"When you are not explicitly asked to use agy, do the work yourself and never silently hand it to the Antigravity agent.",
-		"Once the user has asked, you are the orchestrator for that task: use agy, agy_code, agy_explore, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity agent instead of doing them inline.",
+		"Once the user has asked, you are the orchestrator for that task: use agy, agy_code, agy_explore, agy_vision, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, inspecting screenshots/images, research passes) to the Antigravity agent instead of doing them inline.",
+		"- Image and screenshot work goes to agy_vision({ images: [\"path/to/shot.png\"], prompt, url?, jsonSchema? }): the agent opens the actual pixels. `url` makes it capture a headless-Chrome screenshot first (implies allowCommands). pi cannot attach images inline, so put image files in the workspace and pass their paths.",
 		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did.",
 		"After a delegated agy run (including each agy_fleet lane), VERIFY the outcome yourself before reporting success:",
 		"- files the agent claims to have written exist and contain what was asked (use read / ls / grep),",

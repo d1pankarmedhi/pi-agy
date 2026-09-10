@@ -190,6 +190,27 @@ test("singleCallLines shows title, config meta, and prompt", () => {
 	assert.match(text, /Map the modules in src\//);
 });
 
+test("singleCallLines renders the vision preset with image and screenshot meta", () => {
+	const lines = singleCallLines(
+		"vision",
+		{
+			prompt: "List layout bugs",
+			images: ["shot.png", "ui/mock.png"],
+			url: "http://localhost:3000",
+			model: "gemini-3.8-flash-high",
+			workspace: "ws",
+		},
+		120,
+		theme
+	);
+	const text = lines.join("\n");
+	assert.match(text, /agy_vision/);
+	assert.match(text, /image/);
+	assert.match(text, /2 images/);
+	assert.match(text, /screenshot http:\/\/localhost:3000/);
+	assert.match(text, /List layout bugs/);
+});
+
 test("singleActivityLines shows live step, target, elapsed, and recent trail", () => {
 	const lines = singleActivityLines("explore", streamDetails, 96, theme);
 	const text = lines.join("\n");
@@ -311,6 +332,19 @@ test("all cards stay within the requested width", () => {
 	const at = (build: (w: number) => string[], width: number) => new View(build).render(width);
 	for (const width of WIDTHS) {
 		assertFits(at((w) => singleCallLines("explore", { prompt: "a".repeat(400), workspace: "C:/very/long/workspace/path/here", model: "gemini-3.8-flash-high" }, w, theme), width), width);
+		assertFits(
+			at(
+				(w) =>
+					singleCallLines(
+						"vision",
+						{ prompt: "p".repeat(300), images: ["a/very/long/image/name/that/keeps/going.png"], url: "https://example.com/a/very/long/page/path?with=query", workspace: "C:/very/long/workspace/path/here" },
+						w,
+						theme
+					),
+				width
+			),
+			width
+		);
 		assertFits(at((w) => singleActivityLines("explore", streamDetails, w, theme), width), width);
 		assertFits(at((w) => singleResultLines("explore", doneDetails, w, theme, false), width), width);
 		assertFits(at((w) => singleResultLines("explore", doneDetails, w, theme, true), width), width);

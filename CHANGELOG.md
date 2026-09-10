@@ -11,6 +11,14 @@ All notable changes to this project are documented in this file.
   - Inspect screenshots, UI mockups, diagrams, charts, and scanned pages by
     passing `images: ["shot.png", …]`; the agent opens the actual pixels with
     its `view_file` tool (never guessing from the filename).
+  - **Local paths anywhere on disk.** `images` accepts workspace-relative,
+    absolute, `~/…`, Git-Bash (`/c/Users/…` on Windows), and `file://` paths.
+    Files outside the workspace are copied into a per-run temp directory
+    (registered with agy via the repeatable `--add-dir` flag, de-duplicated by
+    name, removed when the run ends), so `allowNonWorkspaceAccess` is no longer
+    required. Missing paths are reported in the result instead of being skipped
+    silently, and a call whose images are all unreadable fails fast. New
+    `stageLocalImages`/`isRemotePath`/`resolveLocalPath` helpers.
   - Pass `url` to have the agent capture a headless-Chrome/Edge screenshot of a
     running page first, then inspect the captured file. `url` implies
     `allowCommands=true` (explicit `allowCommands` still wins).
@@ -67,6 +75,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- `~` paths resolved against the drive root on Windows (`~/dev/x` became
+  `C:\dev\x`); `resolveLocalPath` now strips the separator before joining the
+  home directory. The same path handling is shared by workspaces and vision
+  images.
 - Metric chips and subtitles drop at token boundaries (no mid-word `…`),
   and every card line is width-clamped so output never overflows the column.
 - Failed runs no longer render as green `✓ done`: renderers read pi's

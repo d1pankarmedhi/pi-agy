@@ -13,6 +13,8 @@ export interface BuildResultOptions {
 	model: string;
 	allowCommands: boolean;
 	steps?: StepRecord[];
+	/** Warnings produced by the caller (e.g. unresolved image paths). */
+	extraWarnings?: readonly string[];
 	/** Run metadata for the TUI card (preset, effort, timeout, …). */
 	meta?: AgyMeta;
 }
@@ -28,8 +30,9 @@ export function buildResult(
 	if (r.usage?.total_tokens !== undefined) meta.push(`tokens=${r.usage.total_tokens}`);
 
 	let text = r.response?.trim() || "(the agy agent returned no text)";
-	if (r.warnings?.length) {
-		text += `\n\n⚠️ ${r.warnings.join(" ")}`;
+	const warnings = [...(opts.extraWarnings ?? []), ...(r.warnings ?? [])];
+	if (warnings.length) {
+		text += `\n\n⚠️ ${warnings.join(" ")}`;
 	}
 
 	// Run log: the terminal trail of every tool step the agent performed.
@@ -58,7 +61,7 @@ export function buildResult(
 			duration_seconds: r.duration_seconds,
 			num_turns: r.num_turns,
 			denied_actions: r.denied_actions,
-			warnings: r.warnings,
+			warnings: warnings.length ? warnings : undefined,
 			files_written: r.files_written,
 			commands_run: r.commands_run,
 			workspace: opts.workspace,

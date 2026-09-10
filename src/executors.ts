@@ -27,6 +27,10 @@ export interface AgyToolParams {
 	conversation?: string;
 	jsonSchema?: string;
 	timeout?: string;
+	/** Extra workspace roots for agy (e.g. staged vision image copies). */
+	addDirs?: readonly string[];
+	/** Warnings to show with the result (e.g. images that could not be found). */
+	extraWarnings?: readonly string[];
 	/** Internal: which preset invocation this is (selects the TUI card). */
 	preset?: AgyPreset;
 }
@@ -68,6 +72,7 @@ export async function executeAgy(
 			effort: params.effort,
 			agent: params.agent,
 			allowCommands,
+			addDirs: params.addDirs,
 			continueConv: params.continueConv ?? false,
 			conversation: params.conversation,
 			jsonSchema: params.jsonSchema,
@@ -93,7 +98,7 @@ export async function executeAgy(
 		// Final one-shot status before the footer clears.
 		if (ctx.hasUI)
 			ctx.ui.setStatus("agy", `agy ✓ done in ${formatDuration(r.duration_seconds ? r.duration_seconds * 1000 : 0)}`);
-		return buildResult(r, { workspace, model, allowCommands, steps: r.steps ?? [], meta });
+		return buildResult(r, { workspace, model, allowCommands, steps: r.steps ?? [], meta, extraWarnings: params.extraWarnings });
 	} finally {
 		pushFooter.cancel();
 		if (ctx.hasUI) ctx.ui.setStatus("agy", undefined);

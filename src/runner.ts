@@ -34,6 +34,8 @@ export interface RunOptions {
 	effort?: "low" | "medium" | "high";
 	agent?: string;
 	allowCommands: boolean;
+	/** Extra directories to register as workspace roots (e.g. staged vision images). */
+	addDirs?: readonly string[];
 	continueConv: boolean;
 	conversation?: string;
 	jsonSchema?: string;
@@ -106,36 +108,69 @@ const STREAM_TEXT_CAP = 4000;
 // Last conversation id per workspace, so `continue` can resume real context.
 const lastConversation = new Map<string, string>();
 
+/** Everything that shapes the agy command line (no I/O, so it is unit-testable). */
+export interface AgyArgsInput {
+	prompt: string;
+	workspace: string;
+	model?: string;
+	effort?: "low" | "medium" | "high";
+	agent?: string;
+	allowCommands: boolean;
+	jsonSchema?: string;
+	timeout: string;
+	/** Extra workspace roots (repeatable `--add-dir`), e.g. staged vision images. */
+	addDirs?: readonly string[];
+	/** Explicit conversation id to resume (wins over `continueConv`). */
+	conversation?: string;
+	continueConv?: boolean;
+}
+
+/** Build the agy CLI arguments for one run. */
+export function buildAgyArgs(opts: AgyArgsInput): string[] {
+	const args = ["-p", opts.prompt, "--output-format", "stream-json"];
+
+	// Register the workspace directory so agy treats it as the active
+	// workspace (otherwise file writes fall back to the scratch dir).
+	args.push("--add-dir", opts.workspace);
+	// Extra roots (repeatable flag) — used to expose staged image copies
+	// that live outside the workspace so the agent can read them.
+	const seenDirs = new Set([opts.workspace]);
+	for (const dir of opts.addDirs ?? []) {
+		if (dir && !seenDirs.has(dir)) {
+			seenDirs.add(dir);
+			args.push("--add-dir", dir);
+		}
+	}
+
+	const effort = opts.effort || config.effort;
+	let model = opts.model || config.model;
+	if (effort) model = matchEffort(model, effort);
+	if (model) args.push("--model", model);
+	if (effort && isGemini(model)) args.push("--effort", effort);
+	const agent = opts.agent || config.agent;
+	if (agent) args.push("--agent", agent);
+	if (opts.jsonSchema) args.push("--json-schema", opts.jsonSchema);
+	args.push("--print-timeout", opts.timeout);
+
+	// Conversation continuity.
+	if (opts.conversation) args.push("--conversation", opts.conversation);
+	else if (opts.continueConv) args.push("--continue");
+
+	// File reads/writes inside the workspace are auto-allowed by agy.
+	// Command execution needs explicit approval; gate it behind the flag.
+	if (opts.allowCommands) args.push("--dangerously-skip-permissions");
+
+	return args;
+}
+
 export function runAgy(opts: RunOptions): Promise<StreamResult> {
 	return new Promise((resolvePromise, reject) => {
-		const args = ["-p", opts.prompt, "--output-format", "stream-json"];
-
-		// Register the workspace directory so agy treats it as the active
-		// workspace (otherwise file writes fall back to the scratch dir).
-		args.push("--add-dir", opts.workspace);
-
-		const effort = opts.effort || config.effort;
-		let model = opts.model || config.model;
-		if (effort) model = matchEffort(model, effort);
-		if (model) args.push("--model", model);
-		if (effort && isGemini(model)) args.push("--effort", effort);
-		const agent = opts.agent || config.agent;
-		if (agent) args.push("--agent", agent);
-		if (opts.jsonSchema) args.push("--json-schema", opts.jsonSchema);
-		args.push("--print-timeout", opts.timeout);
-
-		// Conversation continuity.
-		if (opts.conversation) {
-			args.push("--conversation", opts.conversation);
-		} else if (opts.continueConv) {
-			const prior = lastConversation.get(opts.workspace);
-			if (prior) args.push("--conversation", prior);
-			else args.push("--continue");
-		}
-
-		// File reads/writes inside the workspace are auto-allowed by agy.
-		// Command execution needs explicit approval; gate it behind the flag.
-		if (opts.allowCommands) args.push("--dangerously-skip-permissions");
+		// Resolve conversation continuity against the last id seen in this workspace.
+		const prior = opts.conversation ? undefined : lastConversation.get(opts.workspace);
+		const args = buildAgyArgs({
+			...opts,
+			conversation: opts.conversation ?? (opts.continueConv ? prior : undefined),
+		});
 
 		const child = spawn(config.bin, args, {
 			cwd: opts.workspace,

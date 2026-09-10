@@ -4,11 +4,26 @@
  * pi-agy can only hand agy a *text* prompt (the agy CLI has no image flag), so
  * image work is delegated by path: the prompt lists the files to inspect and
  * instructs the agent to open them with its image-viewing tool before
- * answering. When a `url` is supplied the prompt also asks the agent to capture
- * a headless-Chrome screenshot first and then inspect that file.
+ * answering. Local paths may point anywhere on disk — paths outside the
+ * workspace are copied into a per-run temp directory that is registered with
+ * agy via `--add-dir`, so the agent can read them without
+ * `allowNonWorkspaceAccess`. When a `url` is supplied the prompt also asks the
+ * agent to capture a headless-Chrome screenshot first and then inspect that
+ * file.
  */
 
+import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, extname, isAbsolute, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveLocalPath } from "./paths.ts";
+
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|avif|svg)$/i;
+
+/** http(s):, data:, … — handed to the agent verbatim instead of staged. */
+const REMOTE_PATH = /^[a-z][a-z0-9+.\-]*:/i;
+/** Windows drive letters (`C:\x`, `E:/x`) also match REMOTE_PATH — they are local. */
+const DRIVE_PATH = /^[a-z]:[\\/]/i;
 
 export const VISION_GUIDE =
 	"IMAGE TASK — inspect the actual pixels before answering. " +
@@ -43,6 +58,122 @@ export function normalizeImages(images: readonly string[] | undefined): string[]
 /** True when the path looks like a raster/vector image the agent can view. */
 export function isImagePath(path: string): boolean {
 	return IMAGE_EXT.test(path.trim());
+}
+
+/** True when the entry is a URL/data URI rather than a local file path. */
+export function isRemotePath(path: string): boolean {
+	const p = path.trim();
+	return REMOTE_PATH.test(p) && !DRIVE_PATH.test(p);
+}
+
+/** True when `file` is the workspace directory itself or lives inside it. */
+function isInsideWorkspace(workspace: string, file: string): boolean {
+	const within = (dir: string, target: string) => {
+		const rel = relative(dir, target);
+		return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+	};
+	if (within(workspace, file)) return true;
+	// Windows paths are case-insensitive; mixed-case workspaces are common.
+	return process.platform === "win32" && within(workspace.toLowerCase(), file.toLowerCase());
+}
+
+/** A local image path made reachable by the agent, or staged from outside the workspace. */
+export interface StagedImages {
+	/** Final paths to list in the prompt (absolute; staged copies for outside files). */
+	images: string[];
+	/** Extra directories to register with agy (`--add-dir`) — the staging dir, if used. */
+	addDirs: string[];
+	/** Requested paths that do not exist on disk (excluded from `images`). */
+	missing: string[];
+	/** Original → staged-copy pairs, so the result can report what was copied. */
+	staged: Array<{ from: string; to: string }>;
+	/** Remove the staging directory; a no-op when nothing was staged. */
+	cleanup: () => void;
+}
+
+/**
+ * Make local image paths readable by the agent. `resolveLocalPath` handles `~`,
+ * Git-Bash forms, and relative paths; files already inside the workspace are
+ * passed through, while files elsewhere are copied (deduplicated by name) into
+ * a per-run temp directory that is registered via `--add-dir`, so the agent
+ * never needs `allowNonWorkspaceAccess`. Missing paths are reported instead of
+ * being silently ignored.
+ */
+export function stageLocalImages(
+	images: readonly string[] | undefined,
+	workspace: string,
+	opts: { tmpRoot?: string } = {}
+): StagedImages {
+	const out: StagedImages = { images: [], addDirs: [], missing: [], staged: [], cleanup() {} };
+	const used = new Set<string>();
+	const seenAbs = new Set<string>();
+	let stageDir: string | undefined;
+
+	for (const raw of normalizeImages(images)) {
+		// `file://` URLs point at local files — convert them to real paths.
+		let entry = raw;
+		if (/^file:/i.test(entry)) {
+			try {
+				entry = fileURLToPath(entry);
+			} catch {
+				out.missing.push(`${raw} (invalid file:// URL)`);
+				continue;
+			}
+		} else if (isRemotePath(entry)) {
+			out.images.push(entry);
+			continue;
+		}
+		const abs = resolveLocalPath(entry, workspace);
+		// The same file can be passed twice in different forms (C:/x, C:\x, ~/x).
+		const key = process.platform === "win32" ? abs.toLowerCase() : abs;
+		if (seenAbs.has(key)) continue;
+		seenAbs.add(key);
+		let isFile = false;
+		let exists = false;
+		try {
+			exists = existsSync(abs);
+			isFile = exists && statSync(abs).isFile();
+		} catch {
+			exists = false;
+		}
+		if (!exists) {
+			out.missing.push(raw);
+			continue;
+		}		// Inside the workspace (or not a regular file) the agent can read it as-is.
+		if (!isFile || isInsideWorkspace(workspace, abs)) {
+			out.images.push(abs);
+			continue;
+		}
+
+		stageDir ??= mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "pi-agy-vision-"));
+		const ext = extname(abs);
+		const stem = basename(abs, ext) || "image";
+		let name = basename(abs);
+		for (let n = 2; used.has(name.toLowerCase()); n++) name = `${stem}-${n}${ext}`;
+		used.add(name.toLowerCase());
+		const to = join(stageDir, name);
+		try {
+			copyFileSync(abs, to);
+		} catch (e) {
+			out.missing.push(`${raw} (${(e as Error).message})`);
+			continue;
+		}
+		out.images.push(to);
+		out.staged.push({ from: abs, to });
+	}
+
+	if (stageDir) {
+		out.addDirs.push(stageDir);
+		const dir = stageDir;
+		out.cleanup = () => {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				/* best effort — the OS cleans temp dirs anyway */
+			}
+		};
+	}
+	return out;
 }
 
 /**

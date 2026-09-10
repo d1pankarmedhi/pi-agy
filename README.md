@@ -60,7 +60,7 @@ creates files anywhere.
 | `agy`         | General worker. Full control: workspace, model, effort, agent, `allowCommands`, `continueConv`, `conversation`, JSON schema, timeout. |
 | `agy_code`    | Implementation tasks. Writes/edits files in the workspace; commands enabled by default.            |
 | `agy_explore` | Read-only exploration. Never enables shell commands; steers the agent to `list_dir`/`view_file`/`grep_search`. |
-| `agy_vision`  | **Images & screenshots.** Read-only by default: inspects image files with the multimodal agent (screenshots, mockups, diagrams, charts, scanned pages). Pass a `url` and it captures a headless-Chrome screenshot first (implies `allowCommands`). |
+| `agy_vision`  | **Images & screenshots.** Read-only by default: inspects image files with the multimodal agent (screenshots, mockups, diagrams, charts, scanned pages). `images` accepts workspace-relative, absolute, `~/…`, Git-Bash, and `file://` paths — files outside the workspace are staged into a temp dir for the run. Pass a `url` and it captures a headless-Chrome screenshot first (implies `allowCommands`). |
 | `agy_fleet`   | **Fan-out**: run 2–24 independent subtasks as parallel agy agents (bounded concurrency, default 3) with a live per-lane board and per-lane evidence. |
 
 All tools stream a live status card and return the agent's response plus
@@ -209,9 +209,12 @@ actual pixels with its `view_file` tool — it does not guess from the filename.
 
 **Key constraint:** pi-agy passes agy *text only* (the agy CLI has no image
 flag and pi cannot attach images inline), so images are delegated **by path**.
-The files must exist where the agent can reach them — inside the workspace, or
-anywhere with `allowNonWorkspaceAccess` enabled in
-`~/.gemini/antigravity-cli/settings.json`.
+Paths may be workspace-relative, absolute, `~/…`, Git-Bash (`/c/Users/…` on
+Windows), or `file://` URLs. Files that live **outside the workspace** are
+copied into a per-run temp directory that pi-agy registers with agy via
+`--add-dir` (the copy is removed when the run ends), so no
+`allowNonWorkspaceAccess` setting is required. A path that does not exist is
+reported in the result instead of being silently skipped.
 
 ### Inspect an existing image (read-only)
 
@@ -220,6 +223,15 @@ agy_vision({
   images: ["screenshots/home.png", "screenshots/pricing.png"],
   prompt: "List every visual regression versus a standard SaaS pricing page: spacing, alignment, contrast, hierarchy.",
   jsonSchema: '{"type":"object","properties":{"issues":{"type":"array","items":{"type":"string"}}}}',
+})
+```
+
+Local paths work from anywhere on disk, not just the workspace:
+
+```
+agy_vision({
+  images: ["~/Desktop/mock.png", "C:/Users/me/Downloads/bug-report.png"],
+  prompt: "Compare the two: which control is misaligned?",
 })
 ```
 

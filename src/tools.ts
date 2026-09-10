@@ -2,8 +2,9 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { config, MAX_FLEET_CONCURRENCY } from "./config.ts";
 import { executeAgy, executeFleet, type FleetTaskParams } from "./executors.ts";
+import { resolveWorkspace } from "./paths.ts";
 import { fleetRenderers, singleRenderers } from "./render.ts";
-import { buildVisionPrompt, resolveVisionAllowCommands } from "./vision.ts";
+import { buildVisionPrompt, resolveVisionAllowCommands, stageLocalImages } from "./vision.ts";
 
 /**
  * Tool definitions (schemas + labels) wired to the shared executors.
@@ -180,11 +181,14 @@ export const agyVision = defineTool({
 		"Delegate an image task to the Antigravity (agy) agent (Gemini, multimodal). " +
 		"Use to inspect screenshots, UI mockups, diagrams, charts, scanned pages or photos: pass the " +
 		"image file path(s) in `images` and the question in `prompt`. The agent opens the actual " +
-		"pixels with its image-viewing tool and answers from what it sees. Read-only by default " +
+		"pixels with its image-viewing tool and answers from what it sees. Paths may be relative to " +
+		"the workspace, absolute, or `~/…` (Windows, Git-Bash `/c/…` forms, and file:// URLs are " +
+		"accepted); files outside the workspace are copied into a temporary directory for the run so " +
+		"the agent can read them, and the copy is removed afterwards. Read-only by default " +
 		"(no shell commands). Pass `url` to have it capture a headless-Chrome screenshot of a web " +
 		"page first (this implies allowCommands=true) — good for reviewing a running dev server. " +
-		"Images cannot be attached inline: they must exist as files the agent can reach (inside the " +
-		"workspace). Combine with `jsonSchema` for structured extraction (e.g. UI review findings). " +
+		"Images cannot be attached inline: they must exist as files on disk. Combine with " +
+		"`jsonSchema` for structured extraction (e.g. UI review findings). " +
 		"Note: files produced by shell commands do not appear in the files_written evidence, so " +
 		"verify generated screenshots yourself.",
 	parameters: Type.Object({
@@ -194,7 +198,7 @@ export const agyVision = defineTool({
 		images: Type.Optional(
 			Type.Array(Type.String(), {
 				description:
-					"Image file path(s) to inspect, relative to the workspace or absolute, e.g. [\"shot.png\"].",
+					"Image file path(s) to inspect — workspace-relative, absolute, or ~/… (Git-Bash /c/… and file:// also work), e.g. [\"shot.png\", \"C:/Users/me/Downloads/mock.png\"].",
 			})
 		),
 		url: Type.Optional(
@@ -229,19 +233,39 @@ export const agyVision = defineTool({
 	}),
 	execute: (id, params, signal, onUpdate, ctx) => {
 		const allowCommands = resolveVisionAllowCommands(params.allowCommands, params.url);
+		const workspace = params.workspace ? resolveWorkspace(params.workspace, ctx.cwd) : ctx.cwd;
+		// Resolve local paths; stage anything outside the workspace so the agent
+		// can read it without allowNonWorkspaceAccess in its own settings.
+		const staged = stageLocalImages(params.images, workspace);
+		if (!staged.images.length && !params.url?.trim()) {
+			staged.cleanup();
+			throw new Error(
+				params.images?.length
+					? `agy_vision: no readable image — not found on disk: ${staged.missing.join(", ")}`
+					: "agy_vision: provide image file path(s) in `images` or a page `url`"
+			);
+		}
+		const extraWarnings: string[] = [];
+		if (staged.missing.length) extraWarnings.push(`image(s) not found, skipped: ${staged.missing.join(", ")}.`);
+		if (staged.staged.length)
+			extraWarnings.push(
+				`copied ${staged.staged.length} image(s) from outside the workspace into a temporary staging directory for this run (removed afterwards).`
+			);
 		return executeAgy(
 			id,
 			{
 				prompt: buildVisionPrompt({
 					prompt: params.prompt,
-					images: params.images,
+					images: staged.images,
 					url: params.url,
 					allowCommands,
 				}),
-				workspace: params.workspace,
+				workspace,
 				model: params.model,
 				effort: params.effort,
 				allowCommands,
+				addDirs: staged.addDirs,
+				extraWarnings,
 				continueConv: params.continueConv,
 				jsonSchema: params.jsonSchema,
 				timeout: params.timeout,
@@ -250,7 +274,7 @@ export const agyVision = defineTool({
 			signal,
 			onUpdate,
 			ctx
-		);
+		).finally(staged.cleanup);
 	},
 	...singleRenderers("vision"),
 });

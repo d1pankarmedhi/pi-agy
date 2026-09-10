@@ -2,16 +2,23 @@
 
 Delegate low-level tasks — writing code, exploring a codebase, research passes —
 to Google Antigravity's [agy CLI](https://antigravity.google/docs/cli/headless/)
-running a Gemini agent. Pi stays the **orchestrator**: it farms out subtasks to
-agy (`agy`, `agy_code`, `agy_explore`, `agy_fleet` tools), then **verifies** the
-agent's work itself before reporting success.
+running a Gemini agent. Pi stays the **orchestrator**: once you ask for it, it
+farms out subtasks to agy (`agy`, `agy_code`, `agy_explore`, `agy_fleet` tools),
+then **verifies** the agent's work itself before reporting success.
 
-Unlike a black box, every run is observable: a live status line in the
-conversation shows what the agent is doing in real time (the step, the file it
-is writing/editing, the command it is running), and the final result includes a
-full **run log** of every tool step. `agy_fleet` fans out multiple agy agents
-on a list of tasks with bounded concurrency and a live per-lane board — the
-same shape as pi-subagents cards.
+> **Opt-in.** pi-agy never delegates on its own. Pi only calls the agy tools when
+you explicitly ask for agy in that request (e.g. “use agy”, “delegate this to
+agy”, “run agy_fleet”, “use Antigravity”). Otherwise pi does the work with its
+normal tools. See [Orchestration pattern](#orchestration-pattern-pi--orchestrator-agy--subagent--opt-in).
+
+Unlike a black box, every run is observable: a live, responsive card in the
+conversation shows what the agent is doing in real time — the current step and
+the file it is writing/editing or command it is running, plus running metrics
+(steps, files, commands, turns, tokens) and a recent step trail. When the run
+finishes the card shows the outcome, the agent's response, the evidence an
+orchestrator verifies against (files written, commands run), and a full **run
+log** of every tool step. `agy_fleet` fans out multiple agy agents on a list of
+tasks with bounded concurrency and a live per-lane board.
 
 Install / uninstall through pi like any other package (`pi-web-access`,
 `pi-mcp-adapter`, …). The extension never writes to disk, so uninstalling
@@ -61,28 +68,56 @@ every tool step.
 
 ## Live status (what is the agent doing right now?)
 
-While an agy agent runs, pi shows a compact one-line status that updates per
-step — subagent-style:
+Every tool renders a **premium, responsive card** in the TUI instead of a bare
+text blob. The call card states the request; the result card is a live status
+continuation that updates per step and expands with `Ctrl+O`.
+
+**Call card** — what was asked, and with which configuration:
 
 ```text
-> step 4 · ✎ src/main.ts              ← currently editing this file
-> step 5 · $ npm test                 ← currently running this command
-… step 6 · thinking / writing response
+◆ agy_explore · read-only
+  gemini-3.8-flash-high  ·  high effort  ·  timeout 10m  ·  E:/dev/SAAS/secondbrain
+  Map the modules in src/ and explain how they connect to the worker pipeline
 ```
 
-The step's file is shown workspace-relative, so `✎ src/main.ts` means
-`<workspace>/src/main.ts`. The same state also appears in the footer status bar
-(`agy ⟳ …`) when a UI is present, and structured `details` (`step`, `tool`,
-`file`, `command`, `filesTouched`, `elapsedMs`) are streamed for RPC/UI
-consumers. When the run finishes, the result carries a **run log**: a terminal
-trail of every tool step the agent performed, e.g.
+**While running** — current step and target, live metrics, and the recent trail:
 
 ```text
-Run log (9 steps):
-  ✓ step 2 · ✎ src/main.ts
-  ✓ step 5 · $ npm test
-  …
+▸ step 50  ·  ✎ worker/src/lib/contradiction.ts                     1m 39s
+  steps 49 · files 6 · commands 3
+────────────────────────────────────────────────────────────────────────
+  ✓ 47  ▤ worker/src/lib/schema.ts
+  ✓ 48  $ npm run typecheck
+  ✓ 49  grep search
 ```
+
+**When done** — outcome, stats, response, evidence, and a capped run log:
+
+```text
+✓ done · steps 50 · files 2 · commands 2 · turns 12 · tokens 48k     2m 14s
+────────────────────────────────────────────────────────────────────────
+<the agent's response>
+────────────────────────────────────────────────────────────────────────
+  files  worker/src/lib/contradiction.ts
+         worker/src/lib/schema.ts
+  ran    npm run typecheck
+         npm test -- worker
+────────────────────────────────────────────────────────────────────────
+  run log  8 of 50 steps  ·  Ctrl+O to expand
+  … 42 earlier steps
+  48  ✓ $ npm test -- worker/48
+  49  ✓ ✎ worker/src/lib/m49.ts
+```
+
+Cards adapt to the terminal width: metric chips and subtitles drop at token
+boundaries, long values ellipsize, and the layout never overflows the column.
+Tool glyphs are semantic — `✎` write/edit, `▤` read, `⌕` search, `⌂` list,
+`$` command.
+
+The same state is mirrored into the footer status bar (`agy ⟳ step 12 · ✎ src/a.ts · 42s`)
+and into structured streaming `details` (`step`, `tool`, `file`, `command`,
+`filesTouched`, `recent`, `preview`, `elapsedMs`) for RPC/UI consumers. The tool
+result still carries the full run log in plain text for the orchestrator.
 
 ## Fan-out with agy_fleet
 
@@ -96,29 +131,44 @@ agy_fleet(tasks=[
 ], concurrency: 2)
 ```
 
-While the fleet runs, a live board shows every lane — same card shape as
-pi-subagents:
+While the fleet runs, the card shows a live per-lane board:
 
 ```text
-agy_fleet · 3 lanes · 2 active · 1 done · 0 failed · 1m 12s
-  ● [edit-a] > step 3 · ✎ src/a.ts · 42s
-  ● [edit-b] > step 2 · ✎ src/b.ts · 38s
-  ✓ [probe]  done · 1 file · 1 command · 1m 05s
+▸ 4 lanes · 2 active · 1 done · 1 failed                            2m 10s
+────────────────────────────────────────────────────────────────────────
+▸ ingest   running   step 12  ✎ worker/src/ingest.ts                   42s
+✓ extract  done      —       2 files · 1 cmd                          38s
+✗ schema   failed    —       agy ERROR: print timeout exceeded        12s
+○ docs     waiting   —       waiting                                    —
 ```
 
-The final result reports per-lane status, short response, duration, and
-`Evidence — [id] files: … commands: …` per successful lane so the orchestrator
-can verify each one. Lanes default to your current working directory unless
-they declare their own `workspace`; give concurrent lanes distinct workspaces
-or distinct files to avoid conflicting edits. Per-lane `model`, `effort`,
-`agent`, `allowCommands`, `continueConv`, `jsonSchema`, and `timeout` override
-the call-level defaults.
+The final result reports per-lane outcome, response, duration, and evidence,
+so the orchestrator can verify each lane:
+
+```text
+◐ 1/2 lanes · 1 failed · concurrency 3                              2m 10s
+────────────────────────────────────────────────────────────────────────
+  ✓ ingest  1 file · 1 command · 42s
+     Refactored the ingest stage to stream batches with backpressure.
+  ✗ schema  agy ERROR: print timeout exceeded
+     task: Migrate the graph tables to v2
+────────────────────────────────────────────────────────────────────────
+  evidence
+    [ingest] files: worker/src/ingest.ts
+    [ingest] ran: npm test
+```
+
+Lanes default to your current working directory unless they declare their own
+`workspace`; give concurrent lanes distinct workspaces or distinct files to
+avoid conflicting edits. Per-lane `model`, `effort`, `agent`, `allowCommands`,
+`continueConv`, `jsonSchema`, and `timeout` override the call-level defaults.
 
 ## Configuration
 
 Sensible defaults are baked in: `gemini-3.8-flash-high`, `effort=high`,
-10m timeout, commands allowed, orchestration+verification on. Override with
-environment variables (highest precedence) or an optional user config file.
+10m timeout, commands allowed, and opt-in delegation with verification guidance
+on. Override with environment variables (highest precedence) or an optional user
+config file.
 
 | Env var             | Default                 | Meaning                                    |
 | ------------------- | ----------------------- | ------------------------------------------ |
@@ -150,12 +200,18 @@ tool params win over both):
 > `gemini-3.8-flash-medium` + `--effort high`. The extension auto-fixes gemini
 > slugs to match the requested effort (see `matchEffort`).
 
-## Orchestration pattern (pi = orchestrator, agy = subagent) — automatic
+## Orchestration pattern (pi = orchestrator, agy = subagent) — opt-in
 
-pi-agy **automatically** injects orchestration + verification guidance into
-pi's system prompt on every agent start (`before_agent_start`). No manual
-system prompt edits and no configuration are needed — installing the package
-activates it:
+pi-agy injects delegation + verification guidance into pi's system prompt on
+every agent start (`before_agent_start`). No manual system prompt edits and no
+configuration are needed — but the guidance is **opt-in**: pi is told
+**not to call any agy tool** unless you explicitly ask for agy in the current
+request. Incidental words such as “delegate”, “parallelize”, “fan out”, or
+“explore” do **not** count, and a request from an earlier turn does not carry
+over. When you have not asked for agy, pi does the work itself with its normal
+tools.
+
+Once you have asked, the injected guidance is:
 
 1. **Delegate** low-level subtasks to the agy tools (or fan out with `agy_fleet`)
    instead of doing them inline.
@@ -198,16 +254,18 @@ Source layout (the entry `index.ts` only wires the extension; all logic lives
 in `src/` with one-directional dependencies):
 
 ```
-index.ts        extension entry: registers tools, orchestration guidance, commands
+index.ts        extension entry: registers tools, opt-in delegation guidance, commands
 src/config.ts   defaults, env vars + ~/.pi/agy.json, fleet caps
 src/model.ts      gemini model/effort consistency (matchEffort)
 src/paths.ts     workspace path normalization (Git-Bash forms on Windows)
-src/status.ts    live activity lines, run log, durations, debounce
-src/fleet.ts     fan-out lane state + per-lane board rendering
+src/status.ts    live activity state, run log, durations, debounce
+src/ui.ts        width-safe card primitives (View, trunc/row/fitParts, wrapping)
+src/render.ts    TUI cards: call/stream/result builders + renderer factories
+src/fleet.ts     fan-out lane state + headless board text
 src/runner.ts    agy spawn, stream-json parsing, evidence extraction
 src/results.ts   tool result assembly (response + run log + evidence)
 src/executors.ts shared tool execution (single-run + fleet)
-src/tools.ts     tool definitions/schemas (agy, agy_code, agy_explore, agy_fleet)
+src/tools.ts     tool definitions/schemas + TUI renderers
 ```
 
 ```bash

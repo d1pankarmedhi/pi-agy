@@ -6,7 +6,9 @@ import {
 	clampConcurrency,
 	formatDuration,
 	formatFleetBoard,
+	isWriteTool,
 	summarizeFleet,
+	toDisplayPath,
 	type FleetLaneState,
 	type LiveActivity,
 	type StepRecord,
@@ -70,6 +72,33 @@ test("activityLine summarizes the done phase with file count", () => {
 test("activityLine falls back to the tool name (underscores → spaces)", () => {
 	const l: LiveActivity = { step: 3, phase: "tool", tool: "grep_search", stepsDone: 1, filesTouched: [], elapsedMs: 10_000 };
 	assert.equal(activityLine(l), "> step 3 · grep search · 10s");
+});
+
+test("isWriteTool classifies mutating tools and leaves read-only tools alone", () => {
+	assert.equal(isWriteTool("write_to_file"), true);
+	assert.equal(isWriteTool("replace_file_content"), true);
+	assert.equal(isWriteTool("edit_file"), true);
+	assert.equal(isWriteTool("read_file"), false);
+	assert.equal(isWriteTool("view_file"), false);
+	assert.equal(isWriteTool("grep_search"), false);
+	assert.equal(isWriteTool("run_command"), false);
+	assert.equal(isWriteTool(undefined), false);
+});
+
+// ---------------------------------------------------------------------------
+// toDisplayPath
+// ---------------------------------------------------------------------------
+
+test("toDisplayPath strips the workspace prefix regardless of separator style", () => {
+	const ws = process.platform === "win32" ? "C:\\dev\\proj" : "/dev/proj";
+	const sep = process.platform === "win32" ? "\\" : "/";
+	assert.equal(toDisplayPath(`${ws}${sep}src${sep}main.ts`, ws), `src${sep}main.ts`);
+	assert.equal(toDisplayPath(`${ws}${sep}src${sep}main.ts`, `${ws}${sep}`), `src${sep}main.ts`);
+});
+
+test("toDisplayPath leaves paths outside the workspace untouched", () => {
+	assert.equal(toDisplayPath("/etc/hosts", "/dev/proj"), "/etc/hosts");
+	assert.equal(toDisplayPath("/dev/proj", ""), "/dev/proj");
 });
 
 // ---------------------------------------------------------------------------

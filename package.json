@@ -42,13 +42,20 @@
     "SECURITY.md"
   ],
   "devDependencies": {
+    "@earendil-works/pi-tui": "^0.85.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.6.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   },
   "pi": {
     "extensions": [

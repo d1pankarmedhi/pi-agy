@@ -2,6 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { config, MAX_FLEET_CONCURRENCY } from "./config.ts";
 import { executeAgy, executeFleet, type FleetTaskParams } from "./executors.ts";
+import { fleetRenderers, singleRenderers } from "./render.ts";
 
 /**
  * Tool definitions (schemas + labels) wired to the shared executors.
@@ -14,8 +15,9 @@ export const agyRun = defineTool({
 	name: "agy",
 	label: "Agy (Antigravity)",
 	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy / the Antigravity agent for the current task; otherwise do the work yourself. " +
 		"Delegate a low-level task to the Antigravity (agy) CLI agent running a Gemini model. " +
-		"Use for focused work the main agent can hand off: writing/editing a file, exploring or " +
+		"Use for focused work the user has asked to hand off: writing/editing a file, exploring or " +
 		"summarizing part of a codebase, running a quick research pass, drafting code, or " +
 		"performing a multi-step task in a dedicated workspace. " +
 		"The agy agent runs with its own tool loop. File reads/writes inside the workspace are " +
@@ -78,6 +80,7 @@ export const agyRun = defineTool({
 		),
 	}),
 	execute: executeAgy,
+	...singleRenderers("run"),
 });
 
 // Read-only exploration preset: never passes --dangerously-skip-permissions and
@@ -91,6 +94,7 @@ export const agyExplore = defineTool({
 	name: "agy_explore",
 	label: "Agy Explore",
 	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy / the Antigravity agent for the current task. " +
 		"Delegate a read-only exploration task to the Antigravity (agy) agent (Gemini). " +
 		"Use to map, explain, or investigate a codebase, a directory, or a chunk of code without " +
 		"modifying anything. Shell commands are never enabled for this tool; file reads inside " +
@@ -111,11 +115,12 @@ export const agyExplore = defineTool({
 	execute: (id, params, signal, onUpdate, ctx) =>
 		executeAgy(
 			id,
-			{ ...params, prompt: `${params.prompt}\n\n${EXPLORE_GUIDE}`, allowCommands: false },
+			{ ...params, prompt: `${params.prompt}\n\n${EXPLORE_GUIDE}`, allowCommands: false, preset: "explore" },
 			signal,
 			onUpdate,
 			ctx
 		),
+	...singleRenderers("explore"),
 });
 
 // Code-writing preset: implementation tasks in a workspace.
@@ -123,6 +128,7 @@ export const agyCode = defineTool({
 	name: "agy_code",
 	label: "Agy Code",
 	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy / the Antigravity agent for the current task. " +
 		"Delegate a code-writing/implementation task to the Antigravity (agy) agent (Gemini). " +
 		"Use for writing or editing files, implementing a feature, or generating code in the workspace. " +
 		"File reads/writes in the workspace are allowed. Shell commands are enabled by default " +
@@ -155,11 +161,12 @@ export const agyCode = defineTool({
 	execute: (id, params, signal, onUpdate, ctx) =>
 		executeAgy(
 			id,
-			{ ...params, allowCommands: params.allowCommands ?? config.defaultAllowCommands },
+			{ ...params, allowCommands: params.allowCommands ?? config.defaultAllowCommands, preset: "code" },
 			signal,
 			onUpdate,
 			ctx
 		),
+	...singleRenderers("code"),
 });
 
 const fleetTaskSchema = Type.Object({
@@ -186,6 +193,7 @@ export const agyFleet = defineTool({
 	name: "agy_fleet",
 	label: "Agy Fleet (fan-out)",
 	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy_fleet / Antigravity for the current task. " +
 		"Fan out multiple Antigravity (agy) agents on a list of tasks and run them in parallel " +
 		"with bounded concurrency. Each lane is its own agy agent with its own tool loop and " +
 		"workspace. A live board in the conversation shows every lane: current step, the file " +
@@ -213,6 +221,7 @@ export const agyFleet = defineTool({
 		timeout: Type.Optional(Type.String({ description: `Default max wait per lane (default: ${config.timeout}).` })),
 	}),
 	execute: executeFleet,
+	...fleetRenderers(),
 });
 
 export type { FleetTaskParams };

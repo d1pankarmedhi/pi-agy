@@ -2,6 +2,72 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Rich, responsive TUI cards for every agy tool.** Instead of a single
+  status line, each tool now renders a purpose-built card via `renderCall` /
+  `renderResult`:
+  - _Call card_: tool + mode badge, resolved model/effort/agent/timeout,
+    workspace, and a wrapped prompt preview.
+  - _Streaming card_: phase glyph, current step, the file/command being worked
+    on, elapsed time, live metrics (steps · files · commands), the recent step
+    trail, and a tail preview of the agent's response while it writes.
+  - _Result card_: outcome, full metrics (steps · files · commands · turns ·
+    tokens), duration, response, ⚠️ warnings, workspace-relative evidence
+    lists (`files`, `ran`), and a capped **run log** — all expandable with
+    `Ctrl+O`.
+  - _Fleet board & result_: per-lane status table (id, state, step, activity,
+    elapsed) and a per-lane outcome/evidence summary.
+- New `src/ui.ts` width-safe card primitives (`View`, `trunc`, `row`,
+  `fitParts`, `wrap`) and `src/render.ts` card builders + renderer factories.
+- Semantic per-tool glyphs (`✎` write/edit, `▤` read, `⌕` search, `⌂` list,
+  `$` command) in step trails and run logs.
+- Streaming `details` now carry `recent` (recent steps), `preview` (response
+  tail), and `meta` (preset/model/effort/workspace/flags); fleet streaming
+  details carry per-lane task, elapsed time, and result evidence.
+
+### Changed
+
+- **The agy tools are now opt-in.** The system-prompt guidance injected on
+  every agent start no longer tells pi to delegate proactively. Pi is now
+  instructed **not to call any agy tool** (and not to invoke the Antigravity
+  agent in any other way) unless the user explicitly asks for agy in the
+  current request; incidental words like “delegate”, “parallelize”, “fan out”,
+  or “explore” do not count, and permission does not carry over between turns.
+  Each tool description also leads with the same opt-in constraint. The
+  verification workflow is unchanged for runs the user did ask for.
+- Result cards are a status **continuation** of the call card (no duplicated
+  tool title/header).
+- Footer status is now step-aware: `agy ⟳ step 12 · ✎ src/a.ts · 42s`, and the
+  fleet footer includes elapsed time.
+- `toDisplayPath` now strips the workspace prefix with mixed path separators
+  (Windows workspaces configured with `/`).
+- The fleet footer is cleared when a run ends.
+
+### Fixed
+
+- Metric chips and subtitles drop at token boundaries (no mid-word `…`),
+  and every card line is width-clamped so output never overflows the column.
+- Failed runs no longer render as green `✓ done`: renderers read pi's
+  `context.isError` and show the error text (`✗ failed`) instead of a fake
+  success card. Applies to `agy`/`agy_code`/`agy_explore` and `agy_fleet`.
+- `files_written` evidence now only counts **mutating** tools (`write`/`edit`/
+  `replace`/…); read-only exploration reads (`view_file`, `grep_search`, …) no
+  longer appear as files the agent wrote. Live step trails still show reads
+  (with a `▤` glyph).
+- Live streaming metrics now include the command count, so the running card
+  shows `steps · files · commands` as they happen; fleet failed lanes show
+  their elapsed duration in the final card.
+- Commands containing raw newlines are flattened before rendering (one entry
+  per line array element), and `View` sanitizes stray newlines defensively.
+- Metric/right-align budgets fixed (off-by-one) so trailing chips are dropped
+  whole instead of clipped; long lane ids are truncated instead of overflowing;
+  `step 0` is displayed (was treated as falsy); `fitParts` returns nothing for
+  a zero-width budget; renderer guards against unknown presets and missing
+  fields.
+
 ## [0.2.1] - 2026-09-06
 
 ### Changed

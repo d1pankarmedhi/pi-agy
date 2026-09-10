@@ -6,6 +6,7 @@ import type {
 import { config, clampConcurrency, MAX_FLEET_TASKS } from "./config.ts";
 import { formatFleetBoard, summarizeFleet, type FleetLaneState } from "./fleet.ts";
 import { resolveWorkspace } from "./paths.ts";
+import type { AgyMeta, AgyPreset } from "./render.ts";
 import { runAgy, type StreamResult } from "./runner.ts";
 import { buildResult } from "./results.ts";
 import { debounce, formatDuration, idleActivity, liveDetail, truncate, type LiveActivity } from "./status.ts";
@@ -26,6 +27,8 @@ export interface AgyToolParams {
 	conversation?: string;
 	jsonSchema?: string;
 	timeout?: string;
+	/** Internal: which preset invocation this is (selects the TUI card). */
+	preset?: AgyPreset;
 }
 
 /** Shared execute used by all three single-run tools. */
@@ -38,7 +41,24 @@ export async function executeAgy(
 ): Promise<AgentToolResult<Record<string, unknown>>> {
 	const workspace = params.workspace ? resolveWorkspace(params.workspace, ctx.cwd) : ctx.cwd;
 	const model = params.model || config.model;
+	const effort = params.effort || config.effort;
 	const allowCommands = params.allowCommands ?? config.defaultAllowCommands;
+	const meta: AgyMeta = {
+		preset: params.preset ?? "run",
+		model,
+		effort: effort || undefined,
+		workspace,
+		allowCommands,
+		timeout: params.timeout || config.timeout,
+		continueConv: params.continueConv ?? false,
+		conversation: params.conversation,
+		agent: params.agent || config.agent,
+	};
+
+	let footer = "";
+	const pushFooter = debounce(() => {
+		if (ctx.hasUI && footer) ctx.ui.setStatus("agy", footer);
+	}, 200);
 	if (ctx.hasUI) ctx.ui.setStatus("agy", `agy ⟳ ${truncate(params.prompt, 50)}…`);
 	try {
 		const r = await runAgy({
@@ -54,12 +74,28 @@ export async function executeAgy(
 			timeout: params.timeout || config.timeout,
 			signal,
 			onUpdate,
+			meta,
+			onActivity: (live: LiveActivity) => {
+				const target = live.command
+					? `$ ${truncate(live.command, 40)}`
+					: live.file
+						? `✎ ${truncate(live.file, 40)}`
+						: live.phase === "writing"
+							? "writing"
+							: "thinking";
+				footer =
+					`agy ⟳ step ${live.step} · ${target}` +
+					(live.elapsedMs >= 1000 ? ` · ${formatDuration(live.elapsedMs)}` : "");
+				pushFooter.schedule();
+			},
 		});
+		pushFooter.cancel();
 		// Final one-shot status before the footer clears.
 		if (ctx.hasUI)
 			ctx.ui.setStatus("agy", `agy ✓ done in ${formatDuration(r.duration_seconds ? r.duration_seconds * 1000 : 0)}`);
-		return buildResult(r, { workspace, model, allowCommands, steps: r.steps ?? [] });
+		return buildResult(r, { workspace, model, allowCommands, steps: r.steps ?? [], meta });
 	} finally {
+		pushFooter.cancel();
 		if (ctx.hasUI) ctx.ui.setStatus("agy", undefined);
 	}
 }
@@ -109,17 +145,29 @@ export async function executeFleet(
 
 	const boardPush = debounce(() => {
 		if (!onUpdate) return;
-		const board = formatFleetBoard(lanes, Date.now());
+		const now = Date.now();
+		const board = formatFleetBoard(lanes, now);
+		const summary = summarizeFleet(lanes, now);
 		onUpdate({
 			content: [{ type: "text", text: board.join("\n") }],
 			details: {
 				streaming: true,
 				status: "running",
+				concurrency,
+				elapsedMs: summary.elapsedMs,
 				lanes: lanes.map((l) => ({
 					id: l.id,
+					task: l.task,
+					workspace: l.workspace,
 					status: l.status,
 					activity: liveDetail(l.live),
+					elapsedMs: (l.endedAt ?? now) - (l.startedAt ?? now),
 					error: l.error,
+					response: l.result?.response,
+					files_written: l.result?.files_written,
+					commands_run: l.result?.commands_run,
+					num_turns: l.result?.num_turns,
+					duration_seconds: l.result?.duration_seconds,
 				})),
 			},
 		});
@@ -129,7 +177,7 @@ export async function executeFleet(
 			const bad = lanes.length - active - done;
 			ctx.ui.setStatus(
 				"agy",
-				`agy_fleet ${done}/${lanes.length} done${bad ? ` · ${bad} failed` : ""}${active ? ` · ${active} active` : ""}`
+				`agy_fleet ${done}/${lanes.length} done${bad ? ` · ${bad} failed` : ""}${active ? ` · ${active} active` : ""} · ${formatDuration(summary.elapsedMs)}`
 			);
 		}
 	}, 250);
@@ -176,6 +224,8 @@ export async function executeFleet(
 	});
 	await Promise.allSettled(workers);
 	boardPush.cancel();
+	boardPush.flush();
+	if (ctx.hasUI) ctx.ui.setStatus("agy", undefined);
 	if (signal?.aborted) throw new Error("agy_fleet aborted");
 
 	const summary = summarizeFleet(lanes);
@@ -242,6 +292,7 @@ function buildFleetResult(
 				workspace: l.workspace,
 				status: l.status,
 				error: l.error,
+				elapsedMs: (l.endedAt ?? now) - (l.startedAt ?? now),
 				response: l.result?.response,
 				files_written: l.result?.files_written,
 				commands_run: l.result?.commands_run,
@@ -255,6 +306,7 @@ function buildFleetResult(
 			aborted: summary.aborted,
 			total: lanes.length,
 			concurrency,
+			elapsedMs: summary.elapsedMs,
 			duration_seconds: +(summary.elapsedMs / 1000).toFixed(1),
 		},
 	};

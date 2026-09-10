@@ -40,10 +40,14 @@ export const truncate = (s: string, n: number): string => (s.length > n ? s.slic
 
 /** Show a file path relative to the workspace when possible (cleaner status lines). */
 export function toDisplayPath(fp: string, ws: string): string {
-	const sep = process.platform === "win32" ? "\\" : "/";
-	const base = ws.endsWith(sep) ? ws : ws + sep;
-	const lower = (s: string) => (process.platform === "win32" ? s.toLowerCase() : s);
-	return lower(fp).startsWith(lower(base)) ? fp.slice(base.length) : fp;
+	if (!ws) return fp;
+	const win = process.platform === "win32";
+	const norm = (s: string) => (win ? s.replace(/\//g, "\\").toLowerCase() : s);
+	const nf = norm(fp);
+	let nw = norm(ws);
+	if (!nw.endsWith(win ? "\\" : "/")) nw += win ? "\\" : "/";
+	if (!nf.startsWith(nw)) return fp;
+	return fp.slice(ws.length + (ws.endsWith("/") || ws.endsWith("\\") ? 0 : 1));
 }
 
 export function formatDuration(ms: number): string {
@@ -54,8 +58,15 @@ export function formatDuration(ms: number): string {
 	return s ? `${m}m ${s}s` : `${m}m`;
 }
 
-/** Compact one-line status for an activity, e.g. `> step 4 · ✎ src/main.ts · 42s`. */
-export function activityLine(l: LiveActivity): string {
+/**
+ * True for agy tools that mutate the workspace. Used to keep read-only
+ * exploration reads out of the `files_written` evidence list.
+ */
+export function isWriteTool(tool: string | undefined): boolean {
+	return /(write|edit|create|apply|patch|replace|insert|append|delete|rename|move)/i.test(tool ?? "");
+}
+
+/** Compact one-line status for an activity, e.g. `> step 4 · ✎ src/main.ts · 42s`. */export function activityLine(l: LiveActivity): string {
 	const elapsed = l.elapsedMs >= 1000 ? ` · ${formatDuration(l.elapsedMs)}` : "";
 	if (l.phase === "done") {
 		const n = l.filesTouched.length;

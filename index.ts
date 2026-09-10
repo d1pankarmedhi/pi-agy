@@ -5,22 +5,24 @@
  * research passes) to Google Antigravity's headless CLI (`agy`), which drives
  * a Gemini (or other) model agent with its own tool loop. Pi's main agent
  * stays in control as the ORCHESTRATOR and verifies the agent's work before
- * reporting success — that guidance is injected automatically on every agent
- * start, so installation is all users need.
+ * reporting success. Delegation is OPT-IN: guidance injected on every agent
+ * start tells pi not to call any agy tool unless the user explicitly asks for
+ * agy, and (when asked) to verify the result before reporting success.
  *
- * Live status, subagent-style:
- *   - Every agy run streams a compact status line into the conversation while
- *     it works: which step the agent is on, the file it is writing/editing,
- *     the command it is running (`> step 4 · ✎ src/main.ts`, `$ npm test`).
- *     A parallel footer status and a final "Run log" of every tool step make
- *     progress visible without babysitting the run.
+ * Live status (rich TUI cards):
+ *   - Every run renders a call card plus a live status card — current step and
+ *     the file/command being worked on, running metrics (steps · files ·
+ *     commands), a recent step trail, and a response preview — then a result
+ *     card with the outcome, response, evidence (files written / commands run),
+ *     and a capped run log (Ctrl+O to expand).
  *   - `agy_fleet` fans out multiple agy agents on a list of tasks (bounded
- *     concurrency) and publishes a live per-lane board — same shape as
- *     pi-subagents cards — then returns per-lane evidence for verification.
+ *     concurrency) and publishes a live per-lane board, then returns per-lane
+ *     evidence for verification.
  *
- * Module layout (src/): config, model, paths, status (live activity lines),
- * fleet (fan-out board), runner (agy stream parsing), results (tool result
- * assembly), executors (shared tool execution), tools (tool definitions).
+ * Module layout (src/): config, model, paths, status (live activity state),
+ * ui (width-safe card primitives), render (TUI cards), fleet (fan-out board),
+ * runner (agy stream parsing), results (tool result assembly), executors
+ * (shared tool execution), tools (tool definitions + renderers).
  * This entry file only wires everything into the extension runtime.
  *
  * Requirements:
@@ -62,6 +64,7 @@ export {
 	debounce,
 	formatDuration,
 	idleActivity,
+	isWriteTool,
 	liveDetail,
 	toDisplayPath,
 	truncate,
@@ -69,6 +72,28 @@ export {
 export type { LiveActivity, StepRecord } from "./src/status.ts";
 export { formatFleetBoard, summarizeFleet } from "./src/fleet.ts";
 export type { FleetLaneState, FleetSummary } from "./src/fleet.ts";
+export {
+	fleetBoardLines,
+	fleetCallLines,
+	fleetRenderers,
+	fleetResultLines,
+	singleActivityLines,
+	singleCallLines,
+	singleRenderers,
+	singleResultLines,
+} from "./src/render.ts";
+export type {
+	AgyCallArgs,
+	AgyMeta,
+	AgyPreset,
+	FleetCallArgs,
+	FleetDetails,
+	FleetLaneDetails,
+	FleetTaskArgs,
+	SingleDetails,
+} from "./src/render.ts";
+export { compactNumber, divider, oneLine, row, trunc, View, wrap } from "./src/ui.ts";
+export type { RenderComponent, ThemeLike } from "./src/ui.ts";
 export { buildResult } from "./src/results.ts";
 export { executeAgy, executeFleet } from "./src/executors.ts";
 export type { AgyToolParams, FleetCallParams, FleetTaskParams } from "./src/executors.ts";
@@ -86,13 +111,15 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyCode);
 	pi.registerTool(agyFleet);
 
-	// Pi is the orchestrator: when it delegates work to the agy agent tools, it
-	// must verify the outcome itself before reporting success. This guidance is
-	// injected automatically on every agent start — installation is all users
-	// need; there is nothing to configure manually.
-	const ORCHESTRATOR_GUIDE = [
-		"## Orchestration with the agy tools",
-		"You are the orchestrator. Use agy, agy_code, agy_explore, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity Gemini agent instead of doing them inline.",
+	// The agy tools are OPT-IN: the injected guidance forbids delegating unless
+	// the user explicitly asks for agy, and reminds pi to verify whenever it is
+	// allowed to delegate. Injected automatically on every agent start.
+	const AGY_GUIDE = [
+		"## Antigravity (agy) tools — opt-in only",
+		"agy, agy_code, agy_explore, and agy_fleet delegate work to Google Antigravity's Gemini agent. They are OFF BY DEFAULT: do NOT call any agy tool (and do not otherwise invoke the Antigravity agent) unless the user explicitly asks for it in the current request — e.g. \"use agy\", \"delegate this to agy\", \"run agy_fleet\", \"use the agy tools\", or \"use Antigravity\".",
+		"Do not infer permission from incidental words. \"Delegate\", \"parallelize\", \"fan out\", \"explore\", \"investigate\", or \"subtasks\" on their own do NOT mean \"use agy\": handle those with your normal tools (or ask the user which they want). An earlier request to use agy does not carry over to later turns.",
+		"When you are not explicitly asked to use agy, do the work yourself and never silently hand it to the Antigravity agent.",
+		"Once the user has asked, you are the orchestrator for that task: use agy, agy_code, agy_explore, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, research passes) to the Antigravity agent instead of doing them inline.",
 		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did.",
 		"After a delegated agy run (including each agy_fleet lane), VERIFY the outcome yourself before reporting success:",
 		"- files the agent claims to have written exist and contain what was asked (use read / ls / grep),",
@@ -103,7 +130,7 @@ export default function (pi: ExtensionAPI) {
 	].join("\n");
 
 	pi.on("before_agent_start", async (event) => {
-		return { systemPrompt: event.systemPrompt + "\n\n" + ORCHESTRATOR_GUIDE };
+		return { systemPrompt: event.systemPrompt + "\n\n" + AGY_GUIDE };
 	});
 
 	// Quick sanity check / model list.

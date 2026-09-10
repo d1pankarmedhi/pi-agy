@@ -3,10 +3,12 @@ import { existsSync } from "node:fs";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import { config } from "./config.ts";
 import { isGemini, matchEffort } from "./model.ts";
+import type { AgyMeta } from "./render.ts";
 import {
 	activityLine,
 	debounce,
 	idleActivity,
+	isWriteTool,
 	liveDetail,
 	toDisplayPath,
 	type LiveActivity,
@@ -40,6 +42,8 @@ export interface RunOptions {
 	onUpdate?: AgentToolUpdateCallback;
 	/** Per-event activity callback (used by agy_fleet to keep lane state fresh). */
 	onActivity?: (live: LiveActivity) => void;
+	/** Static run metadata echoed into every streaming `details` payload. */
+	meta?: AgyMeta;
 }
 
 export interface StreamResult {
@@ -167,7 +171,15 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 				stepText.length > STREAM_TEXT_CAP ? stepText.slice(-STREAM_TEXT_CAP) + " …" : stepText;
 			opts.onUpdate({
 				content: [{ type: "text", text: body ? `${line}\n\n${body}` : line }],
-				details: { streaming: true, status: live.phase, ...liveDetail(live) },
+				details: {
+					streaming: true,
+					status: live.phase,
+					recent: steps.slice(-6),
+					preview: stepText.slice(-800),
+					meta: opts.meta,
+					commands_run: commands.size ? [...commands] : undefined,
+					...liveDetail(live),
+				},
 			});
 		};
 		const streamPush = debounce(() => pushStream(), 120);
@@ -219,7 +231,9 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 								if (live.command) rec.command = live.command;
 							}
 							if (tool === "run_command" && command) commands.add(command);
-							if (file) files.add(file);
+							// Only mutating tools count as files *written*; exploration reads
+							// still appear in the live activity + step trail.
+							if (file && isWriteTool(tool)) files.add(file);
 							streamPush.flush();
 						}
 					} else if (s?.step_type === "agent_response") {

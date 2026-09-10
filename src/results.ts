@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { AgyMeta } from "./render.ts";
 import type { StreamResult } from "./runner.ts";
 import { buildRunLog, type StepRecord } from "./status.ts";
 
@@ -12,6 +13,8 @@ export interface BuildResultOptions {
 	model: string;
 	allowCommands: boolean;
 	steps?: StepRecord[];
+	/** Run metadata for the TUI card (preset, effort, timeout, …). */
+	meta?: AgyMeta;
 }
 
 export function buildResult(
@@ -36,7 +39,7 @@ export function buildResult(
 
 	// Evidence the orchestrator can verify against.
 	const evidence: string[] = [];
-	if (r.files_written?.length) evidence.push(`files: ${r.files_written.join(", ")}`);
+	if (r.files_written?.length) evidence.push(`files written: ${r.files_written.join(", ")}`);
 	if (r.commands_run?.length) evidence.push(`commands: ${r.commands_run.join(" | ")}`);
 	if (evidence.length) text += `\n\nEvidence — ${evidence.join("   ")}`;
 
@@ -63,6 +66,7 @@ export function buildResult(
 			model: opts.model,
 			allowCommands: opts.allowCommands,
 			steps,
+			meta: opts.meta,
 		},
 	};
 }

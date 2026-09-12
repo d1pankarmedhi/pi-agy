@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import { config } from "./config.ts";
 import { isGemini, matchEffort } from "./model.ts";
@@ -46,6 +47,8 @@ export interface RunOptions {
 	onActivity?: (live: LiveActivity) => void;
 	/** Static run metadata echoed into every streaming `details` payload. */
 	meta?: AgyMeta;
+	/** Injected child spawner for unit testing child process streaming. */
+	spawnChild?: typeof spawn;
 }
 
 export interface StreamResult {
@@ -105,6 +108,82 @@ function extractCommand(parameters: unknown): string | undefined {
 /** Upper bound for the live-streamed agent text; the final result keeps the full response. */
 const STREAM_TEXT_CAP = 4000;
 
+/**
+ * Bounded tail of the agent's most recent output lines, newest last.
+ * Derived from stepText by splitting on newlines and dropping blank lines.
+ */
+export function extractOutputTail(text: string, max = 8): string[] {
+	if (!text) return [];
+	return text
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0)
+		.slice(-max);
+}
+
+/** How much of the growing live stream buffer is scanned for the output tail. */
+const OUTPUT_TAIL_WINDOW = 4000;
+
+/**
+ * `extractOutputTail` over a bounded window of a buffer that grows for the
+ * whole run. Slicing first stops a long run from re-splitting megabytes of text
+ * on every event, and the first (possibly partial) line after a mid-buffer
+ * slice is dropped rather than shown as a broken fragment.
+ */
+export function extractRecentTail(text: string, max = 8, window = OUTPUT_TAIL_WINDOW): string[] {
+	if (!text) return [];
+	if (text.length <= window) return extractOutputTail(text, max);
+	const tail = text.slice(-window);
+	const newline = tail.indexOf("\n");
+	return extractOutputTail(newline >= 0 ? tail.slice(newline + 1) : tail, max);
+}
+
+function extractTokens(raw: unknown): number | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const r = raw as Record<string, unknown>;
+	if (typeof r.tokens === "number") return r.tokens;
+	if (typeof r.total_tokens === "number") return r.total_tokens;
+	if (r.usage && typeof r.usage === "object") {
+		const u = r.usage as Record<string, unknown>;
+		if (typeof u.total_tokens === "number") return u.total_tokens;
+		if (typeof u.tokens === "number") return u.tokens;
+	}
+	return undefined;
+}
+
+function extractTurns(raw: unknown): number | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const r = raw as Record<string, unknown>;
+	if (typeof r.turns === "number") return r.turns;
+	if (typeof r.num_turns === "number") return r.num_turns;
+	return undefined;
+}
+
+/**
+ * Split the files an agent claimed to write into ones that actually exist on
+ * disk and ones that do not.
+ *
+ * agy reports a permission-DENIED `write_to_file` with step state `DONE` and an
+ * overall `SUCCESS`, so step state alone cannot be trusted. The denial is only
+ * visible as `denied_actions` on the final result — after the step events have
+ * already been counted. Checking the filesystem is the only reliable way to
+ * keep phantom paths out of `files_written` evidence.
+ */
+export function splitExistingFiles(
+	files: Iterable<string>,
+	workspace: string,
+	exists: (path: string) => boolean = existsSync
+): { existing: string[]; missing: string[] } {
+	const existing: string[] = [];
+	const missing: string[] = [];
+	for (const file of files) {
+		if (!file) continue;
+		const absolute = isAbsolute(file) ? file : resolve(workspace, file);
+		(exists(absolute) ? existing : missing).push(file);
+	}
+	return { existing: existing.sort(), missing: missing.sort() };
+}
+
 // Last conversation id per workspace, so `continue` can resume real context.
 const lastConversation = new Map<string, string>();
 
@@ -156,8 +235,9 @@ export function buildAgyArgs(opts: AgyArgsInput): string[] {
 	if (opts.conversation) args.push("--conversation", opts.conversation);
 	else if (opts.continueConv) args.push("--continue");
 
-	// File reads/writes inside the workspace are auto-allowed by agy.
-	// Command execution needs explicit approval; gate it behind the flag.
+	// Headless permission gate. Shell commands AND file writes are auto-denied
+	// without this flag (a denied write_to_file still reports step DONE and an
+	// overall SUCCESS, so it is only visible via `denied_actions`).
 	if (opts.allowCommands) args.push("--dangerously-skip-permissions");
 
 	return args;
@@ -172,7 +252,8 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 			conversation: opts.conversation ?? (opts.continueConv ? prior : undefined),
 		});
 
-		const child = spawn(config.bin, args, {
+		const spawnFn = opts.spawnChild ?? spawn;
+		const child = spawnFn(config.bin, args, {
 			cwd: opts.workspace,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
@@ -183,6 +264,7 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 		let result: StreamResult | null = null;
 		let stepText = "";
 		const warnings: string[] = [];
+		const failedActions: string[] = [];
 		const files = new Set<string>();
 		const commands = new Set<string>();
 		const steps: StepRecord[] = [];
@@ -194,13 +276,16 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 			live.stepsDone = steps.length;
 			live.filesTouched = [...files];
 			live.elapsedMs = Date.now() - startedAt;
+			const tail = extractRecentTail(stepText, 8);
+			live.outputTail = tail.length ? tail : undefined;
 			opts.onActivity?.(live);
 		};
 
 		const pushStream = (overrides?: Partial<LiveActivity>) => {
-			if (!opts.onUpdate) return;
+			live.lastActivityAt = Date.now();
 			if (overrides) Object.assign(live, overrides);
 			refreshLive();
+			if (!opts.onUpdate) return;
 			const line = activityLine(live);
 			const body =
 				stepText.length > STREAM_TEXT_CAP ? stepText.slice(-STREAM_TEXT_CAP) + " …" : stepText;
@@ -237,7 +322,13 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 					continue;
 				}
 				if (ev.event === "step_update") {
+					live.lastActivityAt = Date.now();
 					const s = ev.step_update as any;
+					const streamTokens = extractTokens(s) ?? extractTokens(ev);
+					if (streamTokens !== undefined) live.tokens = streamTokens;
+					const streamTurns = extractTurns(s) ?? extractTurns(ev);
+					if (streamTurns !== undefined) live.turns = streamTurns;
+
 					if (s?.step_type === "tool") {
 						const info = s.tool_info as any;
 						const tool = typeof info?.name === "string" ? info.name : undefined;
@@ -251,30 +342,52 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 						const index = typeof s.step_index === "number" ? s.step_index : live.step;
 						live.step = index;
 						if (s.state === "ACTIVE") {
+							live.toolStartedAt = Date.now();
 							// Show the live action immediately (e.g. `✎ src/main.ts`).
 							streamPush.flush();
 						} else {
-							// Tool finished: record it once per step index.
+							live.toolStartedAt = undefined;
+							// agy reports a terminal state per step: DONE on success, ERROR on
+							// failure, and a plain DONE even when the call was permission-denied
+							// (the denial only surfaces in `denied_actions`). Evidence must be
+							// recorded ONLY for a genuine DONE, otherwise a denied write lands in
+							// `files_written` and the orchestrator verifies a file that was never
+							// created.
+							const succeeded = String(s.state ?? "").toUpperCase() === "DONE";
 							let rec = stepByIndex.get(index);
 							if (!rec) {
-								rec = { index, tool: tool ?? "tool", file: live.file, command: live.command, state: "done" };
+								rec = {
+									index,
+									tool: tool ?? "tool",
+									file: live.file,
+									command: live.command,
+									state: succeeded ? "done" : "failed",
+								};
 								stepByIndex.set(index, rec);
 								steps.push(rec);
 							} else {
-								rec.state = "done";
+								// Never downgrade a step that already succeeded.
+								if (!succeeded && rec.state !== "done") rec.state = "failed";
 								if (live.file) rec.file = live.file;
 								if (live.command) rec.command = live.command;
 							}
-							if (tool === "run_command" && command) commands.add(command);
-							// Only mutating tools count as files *written*; exploration reads
-							// still appear in the live activity + step trail.
-							if (file && isWriteTool(tool)) files.add(file);
+							if (succeeded) {
+								if (tool === "run_command" && command) commands.add(command);
+								// Only mutating tools count as files *written*; exploration reads
+								// still appear in the live activity + step trail.
+								if (file && isWriteTool(tool)) files.add(file);
+							} else {
+								const what = command ? `$ ${command}` : file ? `${tool ?? "tool"} ${file}` : (tool ?? "tool");
+								failedActions.push(`step ${index}: ${what}`);
+							}
 							streamPush.flush();
 						}
 					} else if (s?.step_type === "agent_response") {
 						if (typeof s.step_index === "number") live.step = s.step_index;
 						if (typeof s.text_delta === "string" && s.text_delta) {
 							stepText += s.text_delta;
+							const tail = extractRecentTail(stepText, 8);
+							live.outputTail = tail.length ? tail : undefined;
 							live.phase = "writing";
 						} else {
 							live.phase = "thinking";
@@ -285,10 +398,16 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 						streamPush.schedule();
 					}
 				} else if (ev.event === "result") {
+					live.lastActivityAt = Date.now();
 					result = parseResult(ev.result as Record<string, unknown>);
 					if (result?.conversation_id) {
 						lastConversation.set(opts.workspace, result.conversation_id);
 					}
+					const resTokens = extractTokens(ev.result) ?? extractTokens(result);
+					if (resTokens !== undefined) live.tokens = resTokens;
+					const resTurns = extractTurns(ev.result) ?? extractTurns(result);
+					if (resTurns !== undefined) live.turns = resTurns;
+					refreshLive();
 				}
 			}
 		});
@@ -319,7 +438,9 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 		child.on("close", (code) => {
 			sig?.removeEventListener("abort", onAbort);
 			streamPush.cancel();
+			live.toolStartedAt = undefined;
 			if (sig?.aborted) {
+				refreshLive();
 				reject(new Error("agy run aborted"));
 				return;
 			}
@@ -329,6 +450,15 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 				response: stepText,
 				error: stderr.trim() || undefined,
 			};
+			const resTokens = extractTokens(r);
+			if (resTokens !== undefined && live.tokens === undefined) {
+				live.tokens = resTokens;
+			}
+			const resTurns = extractTurns(r);
+			if (resTurns !== undefined && live.turns === undefined) {
+				live.turns = resTurns;
+			}
+			refreshLive();
 
 			// Detect the headless-mode trap: agy can finish SUCCESS with no
 			// output because a tool call was auto-denied.
@@ -345,10 +475,34 @@ export function runAgy(opts: RunOptions): Promise<StreamResult> {
 					warnings.push(stderr.trim());
 				}
 			}
-			r.warnings = warnings.length ? warnings : undefined;
+			if (failedActions.length) {
+				const shown = failedActions.slice(0, 5).join(", ");
+				warnings.push(
+					`${failedActions.length} tool step${failedActions.length === 1 ? "" : "s"} failed or ${failedActions.length === 1 ? "was" : "were"} denied ` +
+						`(${shown}${failedActions.length > 5 ? ", …" : ""}); nothing from ${failedActions.length === 1 ? "it" : "them"} is reported as files/commands evidence.`
+				);
+			}
+			// A denied action (even when the overall run says SUCCESS and the step
+			// says DONE) means the agent did not do what the evidence implies.
+			if (r.denied_actions?.length && r.response?.trim()) {
+				warnings.push(
+					`agy denied ${r.denied_actions.length} action(s): ${r.denied_actions.map((d) => d.action).join(", ")}. ` +
+						`Those actions did not happen; retry with allowCommands=true if they were required.`
+				);
+			}
 			r.tool_steps = steps.length;
 			r.steps = steps;
-			r.files_written = files.size ? [...files].sort() : undefined;
+			// Evidence must be verifiable: drop claimed writes that do not exist.
+			const claimed = files.size ? splitExistingFiles(files, opts.workspace) : { existing: [], missing: [] };
+			if (claimed.missing.length) {
+				warnings.push(
+					`${claimed.missing.length} file${claimed.missing.length === 1 ? "" : "s"} the agent reported writing do not exist on disk ` +
+						`(likely denied or failed): ${claimed.missing.slice(0, 5).join(", ")}${claimed.missing.length > 5 ? ", …" : ""}. ` +
+						`They are excluded from files_written.`
+				);
+			}
+			r.warnings = warnings.length ? warnings : undefined;
+			r.files_written = claimed.existing.length ? claimed.existing : undefined;
 			r.commands_run = commands.size
 				? [...commands].map((c) => (c.length > 160 ? c.slice(0, 157) + "..." : c))
 				: undefined;

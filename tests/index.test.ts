@@ -32,15 +32,15 @@ interface StubTool {
 	execute?: unknown;
 }
 
-type BeforeAgentStart = (event: { systemPrompt: string }) => Promise<{ systemPrompt: string }> | { systemPrompt: string };
+type StubHandler = (...args: any[]) => any;
 
 function registerWithStub() {
 	const tools = new Map<string, StubTool>();
-	const handlers = new Map<string, BeforeAgentStart>();
+	const handlers = new Map<string, StubHandler>();
 	const commands = new Map<string, unknown>();
 	const api = {
 		registerTool: (tool: StubTool) => tools.set(tool.name, tool),
-		on: (event: string, handler: BeforeAgentStart) => handlers.set(event, handler),
+		on: (event: string, handler: StubHandler) => handlers.set(event, handler),
 		registerCommand: (name: string, definition: unknown) => commands.set(name, definition),
 	};
 	extension(api as never);
@@ -49,12 +49,19 @@ function registerWithStub() {
 
 test("the extension registers all five agy tools with custom TUI cards", () => {
 	const { tools } = registerWithStub();
-	for (const name of ["agy", "agy_explore", "agy_code", "agy_vision", "agy_fleet"]) {
+	for (const name of ["agy", "agy_code", "agy_vision", "agy_role", "agy_fleet"]) {
 		const tool = tools.get(name);
 		assert.ok(tool, `tool ${name} was not registered`);
 		assert.equal(typeof tool!.execute, "function", `${name} needs execute`);
 		assert.equal(typeof tool!.renderCall, "function", `${name} needs renderCall`);
 		assert.equal(typeof tool!.renderResult, "function", `${name} needs renderResult`);
+	}
+});
+
+test("no dedicated exploration tool is registered", () => {
+	const { tools } = registerWithStub();
+	for (const name of ["agy_explore", "agyExplore", "explore"]) {
+		assert.equal(tools.has(name), false, `${name} must not be registered`);
 	}
 });
 
@@ -69,6 +76,64 @@ test("injected guidance makes the agy tools opt-in", async () => {
 	assert.match(out.systemPrompt, /explicitly asks/i);
 	assert.match(out.systemPrompt, /off by default/i);
 	assert.match(out.systemPrompt, /agy_vision/);
+	assert.match(out.systemPrompt, /agy_role/);
+	assert.match(out.systemPrompt, /scout \(read-only recon\)/);
+	// Exploration is routed through the read-only scout role, not a second tool.
+	assert.match(out.systemPrompt, /agy_role\(\{ role: "scout"/);
+	assert.doesNotMatch(out.systemPrompt, /agy_explore/);
 	// The old unconditional "you are the orchestrator, use agy" instruction must be gone.
 	assert.doesNotMatch(out.systemPrompt, /You are the orchestrator\. Use agy/);
+});
+
+// ---------------------------------------------------------------------------
+// Fleet surface wiring
+// ---------------------------------------------------------------------------
+
+test("the extension registers the /agy-fleet inspector command", () => {
+	const { commands } = registerWithStub();
+	const command = commands.get("agy-fleet") as { handler?: unknown } | undefined;
+	assert.ok(command, "agy-fleet command was not registered");
+	assert.equal(typeof command!.handler, "function");
+});
+
+test("the extension registers the /agy-doctor command", () => {
+	const { commands } = registerWithStub();
+	const command = commands.get("agy-doctor") as { handler?: unknown } | undefined;
+	assert.ok(command, "agy-doctor command was not registered");
+	assert.equal(typeof command!.handler, "function");
+});
+
+test("session_start binds the fleet view and session_shutdown disposes it", async () => {
+	const { handlers } = registerWithStub();
+	const start = handlers.get("session_start");
+	const shutdown = handlers.get("session_shutdown");
+	assert.ok(start, "session_start handler was not registered");
+	assert.ok(shutdown, "session_shutdown handler was not registered");
+
+	// Non-UI contexts must be tolerated (RPC/print mode): setContext clears state.
+	await start!({ type: "session_start", reason: "startup" }, { hasUI: false });
+	await shutdown!({ type: "session_shutdown", reason: "quit" });
+});
+// ---------------------------------------------------------------------------
+// Public surface: the live-TUI primitives stay importable from the root
+// ---------------------------------------------------------------------------
+
+test("the root export exposes the live-TUI primitives", async () => {
+	const root = await import("../index.ts");
+	for (const name of [
+		// ui
+		"SPINNER_FRAMES", "frameAt", "spinnerGlyph", "truncLine", "fitLine",
+		"formatActivityAge", "formatTokens", "treeBranch", "treeIndent",
+		// status / liveness
+		"ACTIVITY_LONG_RUNNING_MS", "ACTIVITY_NEEDS_ATTENTION_MS",
+		"activityAgeMs", "activityState", "activityFreshnessText", "toolDurationMs",
+		// render / surfaces
+		"LiveView", "fleetSingleRunLines",
+		// runner
+		"extractOutputTail",
+	]) {
+		assert.ok(name in root, `index.ts must re-export ${name}`);
+	}
+	assert.equal(root.SPINNER_FRAMES.length, 10);
+	assert.equal(typeof root.truncLine("hello world", 6), "string");
 });

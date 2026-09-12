@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { resolveRoles, type AgyRole, type AgyRoleOverride } from "./roles.ts";
 
 /**
  * pi-agy configuration. Built-in defaults < user file (~/.pi/agy.json) <
@@ -14,6 +15,10 @@ export interface AgyConfig {
 	timeout: string;
 	defaultAllowCommands: boolean;
 	fleetConcurrency: number;
+	/** Models to retry with, in order, when a run fails outright. */
+	fallbackModels: string[];
+	/** User-defined or overriding specialist roles (see src/roles.ts). */
+	roles: Record<string, AgyRoleOverride>;
 	configFile: string;
 }
 
@@ -24,6 +29,8 @@ const DEFAULT_CONFIG: Omit<AgyConfig, "configFile"> = {
 	timeout: "10m",
 	defaultAllowCommands: true,
 	fleetConcurrency: 3,
+	fallbackModels: [],
+	roles: {},
 };
 
 /** Hard cap for parallel agy lanes (also the clamp ceiling for the config). */
@@ -65,8 +72,23 @@ function loadConfig(): AgyConfig {
 		fleetConcurrency: clampConcurrency(
 			envInt(process.env.AGY_FLEET_CONCURRENCY, file.fleetConcurrency ?? DEFAULT_CONFIG.fleetConcurrency)
 		),
+		fallbackModels: parseModelList(process.env.AGY_FALLBACK_MODELS) ?? file.fallbackModels ?? DEFAULT_CONFIG.fallbackModels,
+		roles: file.roles ?? DEFAULT_CONFIG.roles,
 		configFile: filePath,
 	};
 }
 
+/** `a,b , c` → `[a, b, c]`; undefined for an empty/absent value. */
+function parseModelList(value: string | undefined): string[] | undefined {
+	if (!value) return undefined;
+	const models = value
+		.split(",")
+		.map((m) => m.trim())
+		.filter(Boolean);
+	return models.length ? models : undefined;
+}
+
 export const config = loadConfig();
+
+/** Specialist roles: built-ins merged with any `roles` from the user config. */
+export const roles: readonly AgyRole[] = resolveRoles(config.roles);

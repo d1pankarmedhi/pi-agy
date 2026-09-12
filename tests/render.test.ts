@@ -6,11 +6,13 @@ import {
 	fleetCallLines,
 	fleetRenderers,
 	fleetResultLines,
+	LiveView,
 	singleActivityLines,
 	singleCallLines,
 	singleRenderers,
 	singleResultLines,
 	type AgyMeta,
+	type AgyRenderState,
 	type FleetDetails,
 	type SingleDetails,
 } from "../src/render.ts";
@@ -25,7 +27,7 @@ const theme: ThemeLike = {
 };
 
 const meta: AgyMeta = {
-	preset: "explore",
+	preset: "code",
 	model: "gemini-3.8-flash-high",
 	effort: "high",
 	workspace: "E:/dev/SAAS/secondbrain",
@@ -172,20 +174,57 @@ test("fleetRenderers renders a pi-generated fleet error instead of 0/0 success",
 	assert.doesNotMatch(lines, /✓/);
 });
 
+test("LiveView timer lifecycle: install on partial, clear on final, clear on invalidate and dispose", () => {
+	let invalidations = 0;
+	const state: AgyRenderState = {};
+	const context = {
+		invalidate: () => {
+			invalidations++;
+		},
+		state,
+	};
+
+	// 1. Partial render installs timer
+	const partial = new LiveView((w, frame) => [`frame ${frame}`], true, context);
+	const partialLines = partial.render(80);
+	assert.match(partialLines[0]!, /frame \d+/);
+	assert.ok(state.animationTimer !== undefined, "timer should be installed on context.state");
+
+	// 2. Final render clears timer and does not reinstall
+	const final = new LiveView((w) => ["final output"], false, context);
+	const finalLines = final.render(80);
+	assert.equal(finalLines[0], "final output");
+	assert.equal(state.animationTimer, undefined, "timer should be cleared on final render");
+
+	// 3. Invalidate on component clears timer
+	const partial2 = new LiveView((w, frame) => ["partial 2"], true, context);
+	partial2.render(80);
+	assert.ok(state.animationTimer !== undefined, "timer installed on second partial");
+	partial2.invalidate();
+	assert.equal(state.animationTimer, undefined, "timer cleared on invalidate()");
+
+	// 4. Dispose on component clears timer
+	const partial3 = new LiveView((w, frame) => ["partial 3"], true, context);
+	partial3.render(80);
+	assert.ok(state.animationTimer !== undefined, "timer installed on third partial");
+	partial3.dispose();
+	assert.equal(state.animationTimer, undefined, "timer cleared on dispose()");
+});
+
 // ---------------------------------------------------------------------------
 // Single-run cards
 // ---------------------------------------------------------------------------
 
 test("singleCallLines shows title, config meta, and prompt", () => {
 	const lines = singleCallLines(
-		"explore",
+		"code",
 		{ prompt: "Map the modules in src/", model: "gemini-3.8-flash-high", effort: "high", timeout: "10m", workspace: "ws" },
 		96,
 		theme
 	);
 	const text = lines.join("\n");
-	assert.match(text, /agy_explore/);
-	assert.match(text, /read-only/);
+	assert.match(text, /agy_code/);
+	assert.match(text, /implement/);
 	assert.match(text, /gemini-3\.8-flash-high/);
 	assert.match(text, /Map the modules in src\//);
 });
@@ -212,7 +251,7 @@ test("singleCallLines renders the vision preset with image and screenshot meta",
 });
 
 test("singleActivityLines shows live step, target, elapsed, and recent trail", () => {
-	const lines = singleActivityLines("explore", streamDetails, 96, theme);
+	const lines = singleActivityLines("code", streamDetails, 96, theme);
 	const text = lines.join("\n");
 	assert.match(text, /step 50/);
 	assert.match(text, /contradiction\.ts/);
@@ -222,8 +261,59 @@ test("singleActivityLines shows live step, target, elapsed, and recent trail", (
 	assert.match(text, /▤/);
 });
 
+test("singleActivityLines renders freshness chip when lastActivityAt is present", () => {
+	const now = 1_700_000_100_000;
+	const details: SingleDetails = {
+		...streamDetails,
+		lastActivityAt: now - 3_000,
+	};
+	const lines = singleActivityLines("code", details, 96, theme, 0, now);
+	const text = lines.join("\n");
+	assert.match(text, /active 3s ago/);
+	assert.match(text, /⠋/);
+});
+
+test("singleActivityLines formats token stat with formatTokens", () => {
+	const details: SingleDetails = {
+		...streamDetails,
+		tokens: 4_200,
+	};
+	const lines = singleActivityLines("code", details, 96, theme);
+	const text = lines.join("\n");
+	assert.match(text, /↓ 4\.2k tokens/);
+});
+
+test("singleActivityLines formats recent steps with tree branches and glyphs", () => {
+	const details: SingleDetails = {
+		...streamDetails,
+		recent: [
+			{ index: 47, tool: "read_file", file: "worker/src/lib/schema.ts", state: "done" },
+			{ index: 48, tool: "run_command", command: "npm run typecheck", state: "done" },
+			{ index: 49, tool: "write_to_file", file: "worker/src/lib/contradiction.ts", state: "active" },
+		],
+	};
+	const lines = singleActivityLines("code", details, 96, theme);
+	const text = lines.join("\n");
+	assert.match(text, /├─ ✓ 47/);
+	assert.match(text, /├─ ✓ 48/);
+	assert.match(text, /└─ ▸ 49/);
+});
+
+test("singleActivityLines renders output tail with current tool duration", () => {
+	const now = 1_700_000_100_000;
+	const details: SingleDetails = {
+		...streamDetails,
+		toolStartedAt: now - 3_400,
+		outputTail: ["Compiling schema…", "Writing the contradiction scorer…"],
+	};
+	const lines = singleActivityLines("code", details, 96, theme, 0, now);
+	const text = lines.join("\n");
+	assert.match(text, /⎿/);
+	assert.match(text, /Writing the contradiction scorer… 3\.4s/);
+});
+
 test("singleResultLines summarizes metrics, response, evidence, and run log", () => {
-	const collapsed = singleResultLines("explore", doneDetails, 96, theme, false).join("\n");
+	const collapsed = singleResultLines("code", doneDetails, 96, theme, false).join("\n");
 	assert.match(collapsed, /steps 50/);
 	assert.match(collapsed, /files 2/);
 	assert.match(collapsed, /tokens 48k/);
@@ -231,7 +321,7 @@ test("singleResultLines summarizes metrics, response, evidence, and run log", ()
 	assert.match(collapsed, /Ctrl\+O to expand/);
 	assert.match(collapsed, /worker\/src\/lib\/contradiction\.ts/);
 
-	const expanded = singleResultLines("explore", doneDetails, 96, theme, true).join("\n");
+	const expanded = singleResultLines("code", doneDetails, 96, theme, true).join("\n");
 	assert.doesNotMatch(expanded, /Ctrl\+O to expand/);
 	assert.match(expanded, /workspace/);
 });
@@ -279,6 +369,33 @@ test("fleetBoardLines shows per-lane state, activity, and elapsed", () => {
 	assert.match(lines, /worker\/src\/ingest\.ts/);
 	assert.match(lines, /print timeout exceeded/);
 	assert.match(lines, /waiting/);
+});
+
+test("fleetBoardLines renders spinner glyph and freshness for live lanes", () => {
+	const now = 1_700_000_100_000;
+	const details: FleetDetails = {
+		elapsedMs: 50_000,
+		lanes: [
+			{
+				id: "worker1",
+				status: "running",
+				activity: {
+					step: 5,
+					phase: "tool",
+					file: "src/worker.ts",
+					lastActivityAt: now - 3_000,
+					stepsDone: 4,
+					filesTouched: [],
+					elapsedMs: 5_000,
+				},
+			},
+		],
+	};
+	const lines = fleetBoardLines(details, 100, theme, 0, now);
+	const text = lines.join("\n");
+	assert.match(text, /worker1/);
+	assert.match(text, /active 3s ago/);
+	assert.match(text, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 });
 
 test("fleetBoardLines degrades to a stacked layout on narrow terminals", () => {
@@ -331,7 +448,7 @@ test("fleetResultLines shows a duration for a failed lane that only has elapsedM
 test("all cards stay within the requested width", () => {
 	const at = (build: (w: number) => string[], width: number) => new View(build).render(width);
 	for (const width of WIDTHS) {
-		assertFits(at((w) => singleCallLines("explore", { prompt: "a".repeat(400), workspace: "C:/very/long/workspace/path/here", model: "gemini-3.8-flash-high" }, w, theme), width), width);
+		assertFits(at((w) => singleCallLines("code", { prompt: "a".repeat(400), workspace: "C:/very/long/workspace/path/here", model: "gemini-3.8-flash-high" }, w, theme), width), width);
 		assertFits(
 			at(
 				(w) =>
@@ -345,9 +462,9 @@ test("all cards stay within the requested width", () => {
 			),
 			width
 		);
-		assertFits(at((w) => singleActivityLines("explore", streamDetails, w, theme), width), width);
-		assertFits(at((w) => singleResultLines("explore", doneDetails, w, theme, false), width), width);
-		assertFits(at((w) => singleResultLines("explore", doneDetails, w, theme, true), width), width);
+		assertFits(at((w) => singleActivityLines("code", streamDetails, w, theme), width), width);
+		assertFits(at((w) => singleResultLines("code", doneDetails, w, theme, false), width), width);
+		assertFits(at((w) => singleResultLines("code", doneDetails, w, theme, true), width), width);
 		assertFits(at((w) => fleetCallLines({ concurrency: 3, tasks: [{ id: "a-very-long-lane-id", task: "t".repeat(200) }] }, w, theme), width), width);
 		assertFits(at((w) => fleetBoardLines(fleetDetails, w, theme), width), width);
 		assertFits(
@@ -368,5 +485,106 @@ test("all cards stay within the requested width", () => {
 			),
 			width
 		);
+	}
+});
+
+test("new singleActivityLines and fleetBoardLines stay width-safe across widths 16..160", () => {
+	const now = 1_700_000_100_000;
+	const richDetails: SingleDetails = {
+		step: 50,
+		phase: "tool",
+		file: "worker/src/lib/contradiction.ts",
+		stepsDone: 49,
+		elapsedMs: 99_000,
+		lastActivityAt: now - 3000,
+		toolStartedAt: now - 3400,
+		tokens: 4200,
+		outputTail: [
+			"Very long output line 1 that should be truncated properly without exceeding any width constraints whatsoever",
+			"Very long output line 2 with more details and text",
+			"Writing the contradiction scorer…",
+		],
+		recent: [
+			{ index: 47, tool: "read_file", file: "worker/src/lib/schema.ts", state: "done" },
+			{ index: 48, tool: "run_command", command: "npm run typecheck --with-many-flags-and-arguments", state: "done" },
+			{ index: 49, tool: "write_to_file", file: "worker/src/lib/contradiction.ts", state: "active" },
+		],
+	};
+	const richFleet: FleetDetails = {
+		elapsedMs: 130_000,
+		lanes: [
+			{
+				id: "a-very-long-lane-identifier-that-could-overflow",
+				status: "running",
+				elapsedMs: 42_000,
+				activity: {
+					step: 12,
+					phase: "tool",
+					tool: "write_to_file",
+					file: "worker/src/long/path/to/ingest.ts",
+					lastActivityAt: now - 2000,
+					toolStartedAt: now - 1500,
+					stepsDone: 11,
+					filesTouched: [],
+					elapsedMs: 42_000,
+					tokens: 3500,
+				},
+			},
+		],
+	};
+
+	for (let w = 16; w <= 160; w++) {
+		const actLines = singleActivityLines("code", richDetails, w, theme, 2, now);
+		assertFits(actLines, w);
+		const fleetLines = fleetBoardLines(richFleet, w, theme, 2, now);
+		assertFits(fleetLines, w);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Specialist-role card
+// ---------------------------------------------------------------------------
+
+test("the role card identifies the specialist and its access policy", () => {
+	const lines = singleCallLines("role", { role: "reviewer", prompt: "review src/a.ts" }, 100, theme);
+	const text = lines.join("\n");
+	assert.match(text, /◆ agy_role/);
+	assert.match(text, /reviewer/);
+	assert.match(text, /specialist/);
+	assert.doesNotMatch(text, /shell/, "a read-only role must not advertise shell access");
+});
+
+test("the role card stays width-safe for a long role id", () => {
+	const args = { role: "a-very-long-specialist-role-name-that-keeps-going", prompt: "t".repeat(300) };
+	for (const width of WIDTHS) {
+		assertFits(singleCallLines("role", args, width, theme), width);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Narrow-width hardening: the pure builders clamp to every width from 1 up
+// ---------------------------------------------------------------------------
+
+test("every card builder respects widths 1..24", () => {
+	const narrow: SingleDetails = {
+		...streamDetails,
+		lastActivityAt: Date.now() - 200_000,
+		toolStartedAt: Date.now() - 3_000,
+		outputTail: ["a fairly long output line that will not fit"],
+		tokens: 4_240_000,
+		turns: 42,
+	};
+	const builders: Array<[string, (w: number) => string[]]> = [
+		["singleCallLines", (w) => singleCallLines("code", { prompt: "x".repeat(400), workspace: "E:/dev/pi-agy" }, w, theme)],
+		["singleActivityLines", (w) => singleActivityLines("code", narrow, w, theme)],
+		["singleResultLines", (w) => singleResultLines("code", { ...doneDetails, ...narrow, warnings: ["w"], response: "y".repeat(2000) }, w, theme, false)],
+		["fleetCallLines", (w) => fleetCallLines({ tasks: [{ id: "a", task: "t".repeat(200) }], concurrency: 3 }, w, theme)],
+		["fleetBoardLines", (w) => fleetBoardLines(fleetDetails, w, theme)],
+		["fleetResultLines", (w) => fleetResultLines({ ...fleetDetails, succeeded: 1, failed: 1 }, w, theme, false)],
+	];
+	for (const [name, build] of builders) {
+		for (let w = 1; w <= 24; w++) {
+			assertFits(build(w), w);
+		}
 	}
 });

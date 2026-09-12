@@ -49,18 +49,37 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { config } from "./src/config.ts";
+import { config, roles } from "./src/config.ts";
+import { doctorDeps, formatDoctorReport, runDoctor } from "./src/doctor.ts";
+import { AgyFleetView } from "./src/fleetview.ts";
+import { openFleetInspector } from "./src/inspector.ts";
+import { agyFleetRegistry } from "./src/registry.ts";
 import { runAgy } from "./src/runner.ts";
-import { agyCode, agyExplore, agyFleet, agyRun, agyVision } from "./src/tools.ts";
+import { agyCode, agyFleet, agyRole, agyRun, agyVision } from "./src/tools.ts";
 
 // Re-export the public surface (helper functions/types used by tests and
 // external consumers).
 
-export { config, clampConcurrency, MAX_FLEET_CONCURRENCY, MAX_FLEET_TASKS } from "./src/config.ts";
+export { config, clampConcurrency, MAX_FLEET_CONCURRENCY, MAX_FLEET_TASKS, roles } from "./src/config.ts";
 export type { AgyConfig } from "./src/config.ts";
+export {
+	applyRole,
+	BUILTIN_ROLES,
+	findRole,
+	resolveRoles,
+	roleIds,
+} from "./src/roles.ts";
+export type { AgyRole, AgyRoleOverride, RoleResolution } from "./src/roles.ts";
+export { doctorDeps, formatDoctorReport, runDoctor } from "./src/doctor.ts";
+export type { DoctorCheck, DoctorReport, DoctorStatus } from "./src/doctor.ts";
 export { matchEffort } from "./src/model.ts";
 export {
+	ACTIVITY_LONG_RUNNING_MS,
+	ACTIVITY_NEEDS_ATTENTION_MS,
+	activityAgeMs,
+	activityFreshnessText,
 	activityLine,
+	activityState,
 	buildRunLog,
 	debounce,
 	formatDuration,
@@ -68,16 +87,47 @@ export {
 	isWriteTool,
 	liveDetail,
 	toDisplayPath,
+	toolDurationMs,
 	truncate,
 } from "./src/status.ts";
-export type { LiveActivity, StepRecord } from "./src/status.ts";
+export type { ActivityState, LiveActivity, StepRecord } from "./src/status.ts";
 export { formatFleetBoard, summarizeFleet } from "./src/fleet.ts";
 export type { FleetLaneState, FleetSummary } from "./src/fleet.ts";
+export {
+	activeFleetTotals,
+	AGY_FLEET_WIDGET_KEY,
+	AgyFleetView,
+	fleetCollapsedLines,
+	fleetRosterLine,
+	fleetRosterLines,
+	fleetSingleRunLines,
+} from "./src/fleetview.ts";
+export type { AgyFleetViewOptions } from "./src/fleetview.ts";
+export {
+	FleetInspectorComponent,
+	fleetDetailLines,
+	formatFleetText,
+	openFleetInspector,
+} from "./src/inspector.ts";
+export {
+	agyFleetRegistry,
+	FleetRegistry,
+	isActiveStatus,
+} from "./src/registry.ts";
+export type {
+	AgyRunFinish,
+	AgyRunInput,
+	AgyRunPreset,
+	AgyRunRecord,
+	AgyRunStatus,
+	FleetCounts,
+} from "./src/registry.ts";
 export {
 	fleetBoardLines,
 	fleetCallLines,
 	fleetRenderers,
 	fleetResultLines,
+	LiveView,
 	singleActivityLines,
 	singleCallLines,
 	singleRenderers,
@@ -87,18 +137,36 @@ export type {
 	AgyCallArgs,
 	AgyMeta,
 	AgyPreset,
+	AgyRenderState,
 	FleetCallArgs,
 	FleetDetails,
 	FleetLaneDetails,
 	FleetTaskArgs,
 	SingleDetails,
 } from "./src/render.ts";
-export { compactNumber, divider, oneLine, row, trunc, View, wrap } from "./src/ui.ts";
+export {
+	compactNumber,
+	divider,
+	fitLine,
+	formatActivityAge,
+	formatTokens,
+	frameAt,
+	oneLine,
+	row,
+	SPINNER_FRAMES,
+	spinnerGlyph,
+	treeBranch,
+	treeIndent,
+	trunc,
+	truncLine,
+	View,
+	wrap,
+} from "./src/ui.ts";
 export type { RenderComponent, ThemeLike } from "./src/ui.ts";
 export { buildResult } from "./src/results.ts";
 export { executeAgy, executeFleet } from "./src/executors.ts";
 export type { AgyToolParams, FleetCallParams, FleetTaskParams } from "./src/executors.ts";
-export { agyCode, agyExplore, agyFleet, agyRun, agyVision } from "./src/tools.ts";
+export { agyCode, agyFleet, agyRole, agyRun, agyVision } from "./src/tools.ts";
 export {
 	buildVisionPrompt,
 	isImagePath,
@@ -108,7 +176,7 @@ export {
 	VISION_GUIDE,
 } from "./src/vision.ts";
 export type { VisionPromptInput } from "./src/vision.ts";
-export { runAgy } from "./src/runner.ts";
+export { extractOutputTail, runAgy, splitExistingFiles } from "./src/runner.ts";
 export type { RunOptions, StreamResult } from "./src/runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -117,22 +185,38 @@ export type { RunOptions, StreamResult } from "./src/runner.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyRun);
-	pi.registerTool(agyExplore);
 	pi.registerTool(agyCode);
 	pi.registerTool(agyVision);
+	pi.registerTool(agyRole);
 	pi.registerTool(agyFleet);
+
+	// The session fleet surface: a persistent widget under the editor while agy
+	// work runs, plus the /agy-fleet inspector it opens. Both read the same
+	// session-wide registry the executors write to.
+	const fleetView = new AgyFleetView((ctx) => openFleetInspector(ctx, agyFleetRegistry));
+
+	pi.on("session_start", (event, ctx) => {
+		if (event.reason !== "reload") agyFleetRegistry.clear();
+		fleetView.setContext(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		fleetView.dispose();
+	});
 
 	// The agy tools are OPT-IN: the injected guidance forbids delegating unless
 	// the user explicitly asks for agy, and reminds pi to verify whenever it is
 	// allowed to delegate. Injected automatically on every agent start.
 	const AGY_GUIDE = [
 		"## Antigravity (agy) tools — opt-in only",
-		"agy, agy_code, agy_explore, agy_vision, and agy_fleet delegate work to Google Antigravity's Gemini agent. They are OFF BY DEFAULT: do NOT call any agy tool (and do not otherwise invoke the Antigravity agent) unless the user explicitly asks for it in the current request — e.g. \"use agy\", \"delegate this to agy\", \"run agy_fleet\", \"use the agy tools\", or \"use Antigravity\".",
+		"agy, agy_code, agy_vision, agy_role, and agy_fleet delegate work to Google Antigravity's Gemini agent. They are OFF BY DEFAULT: do NOT call any agy tool (and do not otherwise invoke the Antigravity agent) unless the user explicitly asks for it in the current request — e.g. \"use agy\", \"delegate this to agy\", \"run agy_fleet\", \"use the agy tools\", or \"use Antigravity\".",
 		"Do not infer permission from incidental words. \"Delegate\", \"parallelize\", \"fan out\", \"explore\", \"investigate\", or \"subtasks\" on their own do NOT mean \"use agy\": handle those with your normal tools (or ask the user which they want). An earlier request to use agy does not carry over to later turns.",
 		"When you are not explicitly asked to use agy, do the work yourself and never silently hand it to the Antigravity agent.",
-		"Once the user has asked, you are the orchestrator for that task: use agy, agy_code, agy_explore, agy_vision, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, inspecting screenshots/images, research passes) to the Antigravity agent instead of doing them inline.",
+		"Once the user has asked, you are the orchestrator for that task: use agy, agy_code, agy_vision, agy_role, and agy_fleet to delegate low-level subtasks (writing code, exploring a codebase, inspecting screenshots/images, research passes) to the Antigravity agent instead of doing them inline.",
+		"- Codebase exploration has no dedicated tool: use agy_role({ role: \"scout\", prompt }) for a read-only recon pass, or read-only agy_fleet lanes when several areas need mapping at once. Read-only roles are enforced — they cannot be granted write or shell access.",
 		"- Image and screenshot work goes to agy_vision({ images: [\"path/to/shot.png\"], prompt, url?, jsonSchema? }): the agent opens the actual pixels. `images` accepts workspace-relative, absolute, `~/…`, Windows, Git-Bash, and file:// paths — files outside the workspace are staged into a temp dir for the run, so you can point at screenshots anywhere on disk. `url` makes it capture a headless-Chrome screenshot first (implies allowCommands). pi cannot attach images inline, so pass file paths.",
-		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did.",
+		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, role?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did. A lane may name a specialist role.",
+		"- Prefer agy_role({ role, prompt }) when the work has a recognisable shape — it applies a prompt contract plus an access policy that an unstructured prompt does not get: scout (read-only recon), implementer (edits + validation), reviewer (findings with severities), verifier (audits claimed evidence), oracle (second opinion). Read-only roles are enforced and cannot be granted write or shell access.",
 		"After a delegated agy run (including each agy_fleet lane), VERIFY the outcome yourself before reporting success:",
 		"- files the agent claims to have written exist and contain what was asked (use read / ls / grep),",
 		"- commands or tests the agent claims to have run actually pass (re-run them with bash when cheap),",
@@ -143,6 +227,25 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		return { systemPrompt: event.systemPrompt + "\n\n" + AGY_GUIDE };
+	});
+
+	// Open the live fleet inspector (active + recently finished agy runs).
+	pi.registerCommand("agy-fleet", {
+		description: "Open the live agy fleet inspector (active + recent runs)",
+		handler: async (_args, ctx) => {
+			await openFleetInspector(ctx, agyFleetRegistry);
+		},
+	});
+
+	// Check the setup: agy CLI, config, workspace, permission mode, roles, models.
+	pi.registerCommand("agy-doctor", {
+		description: "Check the pi-agy setup (agy CLI, config, permissions, roles, models)",
+		handler: async (_args, ctx) => {
+			const report = await runDoctor(await doctorDeps(config, roles, ctx.cwd));
+			const text = formatDoctorReport(report);
+			if (ctx.hasUI) ctx.ui.notify(text, report.ok ? "info" : "error");
+			else console.log(text);
+		},
 	});
 
 	// Quick sanity check / model list.

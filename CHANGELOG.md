@@ -6,6 +6,85 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Live TUI upgrade — animated, information-dense cards and fleet surfaces.**
+  Every surface now mirrors pi-subagents' live TUI quality:
+  - Animated 10-frame braille spinner, liveness/staleness labels (`active 3s ago`,
+    `active but long-running · last activity 1m ago`, `no activity for 2m`), live
+    token + step metrics, tree-branched steps (`├─`/`└─`) and a live output tail
+    (`⎿`) in every card, repainting every 100 ms while a run is in flight.
+  - Compact single-run FleetView block, a `main` + children roster with
+    running → queued → finished grouping, exact-width rows,
+    `+N more (a running, b queued, c finished)` overflow and token totals.
+  - Inspector: animated roster and header, liveness line, live output-tail
+    section, `↓ Nk tokens` totals, `Shift+J`/`Shift+K` line scroll and an
+    `x`/`Ctrl+O` tool-detail toggle.
+  - `src/ui.ts` primitives: ANSI-preserving `truncLine`/`fitLine`,
+    `spinnerGlyph`/`frameAt`, `treeBranch`/`treeIndent`, `formatTokens`,
+    `formatActivityAge`; `src/status.ts` liveness API (`activityState`,
+    `activityAgeMs`, `activityFreshnessText`, `toolDurationMs`); the runner now
+    streams `lastActivityAt`, `toolStartedAt`, `outputTail`, `tokens` and `turns`.
+
+- **Specialist roles (`agy_role`), modelled on pi-subagents' named agents.** A
+  role bundles a shaped output contract with an access policy, because the same
+  Gemini model produces much better work when it is told the exact shape to
+  return — and because a review must not be able to quietly edit your code:
+  - New `src/roles.ts` with five built-ins adapted from pi-subagents'
+    scout/worker/reviewer/evidence-auditor/oracle: `scout` (read-only recon →
+    `# Code Context` brief), `implementer` (edits + validation summary),
+    `reviewer` (findings graded P0/P1/P2 with `file:line` evidence, or exactly
+    `No issues found.`), `verifier` (audits claims as SUPPORTED /
+    PARTIALLY SUPPORTED / UNSUPPORTED) and `oracle` (challenges the plan,
+    never edits).
+  - `applyRole` enforces the policy: read-only roles force
+    `allowCommands: false` and a caller cannot raise it; the caller may still
+    override model, effort and JSON schema.
+  - New `agy_role` tool (renders as a `role` preset card showing the
+    specialist). An unknown role fails fast with the list of known roles.
+  - `agy_fleet` lanes accept `role`, so "run N specialists" works — the killer
+    use case being a parallel `reviewer`/`verifier` panel. Roles are resolved
+    up front, so an unknown lane role fails the whole call before any agent is
+    spawned.
+  - User roles or overrides live in `~/.pi/agy.json` under `roles`; a matching
+    id merges over the built-in (prompt preserved), and a custom role that does
+    not ask for write access is read-only by default.
+- **`/agy-doctor` health check**, mirroring pi-subagents' `/subagents-doctor`.
+  New `src/doctor.ts` reports the agy CLI and its version, whether the user
+  config file parses (a malformed one is silently ignored at load time), the
+  workspace, the permission mode (including the write-denial trap), available
+  roles, whether the configured model exists in `agy models`, and the fallback
+  chain. Every I/O dependency is injected, so the whole report is unit-tested.
+- **Model fallback.** `AGY_FALLBACK_MODELS` (or `fallbackModels` in the config
+  file) retries a failed run with the next model; an abort is never retried,
+  the result reports the chain, and `meta.model` reports the model that
+  actually ran.
+
+- **Session fleet surface: a persistent FleetView widget and the `/agy-fleet`
+  inspector.** pi-agy now keeps every agy run in one session-wide registry, so
+  all parallel work is visible in one place instead of being scattered across
+  individual tool cards:
+  - New `src/registry.ts` (`FleetRegistry`) tracks each single
+    `agy`/`agy_code`/`agy_vision`/`agy_role` call and every `agy_fleet` lane
+    with its live activity, recent steps, metrics, and terminal evidence.
+    Change notifications are debounced; finished runs are retained (newest 25)
+    for the inspector and trimmed automatically. `agyFleetRegistry` is the
+    module singleton the executors write to.
+  - New `src/fleetview.ts` (`AgyFleetView`) registers a persistent widget below
+    the editor while runs are active — collapsed it reads
+    `3 active agents · 42 steps · 6 files · ↓/← to inspect`; pressing `↓`/`←` on
+    an empty editor expands a selectable roster (`↑`/`↓`/`j`/`k`, `Esc` to
+    collapse, `Enter` to inspect). The widget removes itself once every run has
+    finished, leaving no residual surface.
+  - New `src/inspector.ts` (`/agy-fleet`) opens a keyboard-driven overlay with
+    a roster of live and recently finished runs beside the selected run's
+    detail: status, live step/file/command, metrics
+    (steps · files · commands · turns · tokens), evidence (files written,
+    commands run), warnings, response, and recent steps. `↑`/`↓` select,
+    `PgUp`/`PgDn` scroll, `g`/`G` jump, `r` refresh, `Esc` close. Without a TUI
+    it degrades to a plain-text summary.
+  - `executeAgy` and `executeFleet` now register their runs and stream live
+    activity/steps/finish evidence into the registry; the pre-existing per-call
+    cards, footer status, and board are unchanged.
+
 - **New `agy_vision` tool — image and screenshot tasks.** pi-agy can now
   delegate image work to agy's multimodal agent:
   - Inspect screenshots, UI mockups, diagrams, charts, and scanned pages by
@@ -73,8 +152,28 @@ All notable changes to this project are documented in this file.
   (Windows workspaces configured with `/`).
 - The fleet footer is cleared when a run ends.
 
+### Removed
+
+- **`agy_explore` — exploration now goes through `agy_role` and read-only
+  `agy_fleet` lanes.** The dedicated tool was a second, weaker copy of the same
+  prompt contract: it hard-coded a `list_dir`/`view_file`/`grep_search` guide and
+  duplicated the read-only policy that roles already enforce.
+  - Use `agy_role({ role: "scout", prompt })` for a single read-only recon pass
+    (`# Code Context` brief), and read-only `agy_fleet` lanes (`role: "scout"`)
+    when several areas need mapping in parallel.
+  - The injected guidance now routes exploration to the `scout` role, and the
+    `explore` preset was dropped from `AgyPreset`/`PRESETS`/`PRESET_LABEL` along
+    with the tool. `agy_vision` and `agy_role` remain read-only by design.
+  - Breaking for anyone calling `agy_explore` directly: the tool is no longer
+    registered (a call fails as an unknown tool rather than silently doing
+    something else).
+
 ### Fixed
 
+- Truncated styled lines no longer reset SGR mid-line: `trunc`/`pad`/`row` and
+  the card `View` now use an ANSI-style-preserving, grapheme-safe `truncLine`
+  instead of pi-tui's `truncateToWidth`, so the tool background cannot bleed
+  past an ellipsis.
 - `~` paths resolved against the drive root on Windows (`~/dev/x` became
   `C:\dev\x`); `resolveLocalPath` now strips the separator before joining the
   home directory. The same path handling is shared by workspaces and vision
@@ -83,7 +182,7 @@ All notable changes to this project are documented in this file.
   and every card line is width-clamped so output never overflows the column.
 - Failed runs no longer render as green `✓ done`: renderers read pi's
   `context.isError` and show the error text (`✗ failed`) instead of a fake
-  success card. Applies to `agy`/`agy_code`/`agy_explore` and `agy_fleet`.
+  success card. Applies to `agy`/`agy_code`/`agy_vision`/`agy_role` and `agy_fleet`.
 - `files_written` evidence now only counts **mutating** tools (`write`/`edit`/
   `replace`/…); read-only exploration reads (`view_file`, `grep_search`, …) no
   longer appear as files the agent wrote. Live step trails still show reads
@@ -98,6 +197,49 @@ All notable changes to this project are documented in this file.
   `step 0` is displayed (was treated as falsy); `fitParts` returns nothing for
   a zero-width budget; renderer guards against unknown presets and missing
   fields.
+- **`files_written` evidence is now verified against the filesystem, and denied
+  actions are surfaced.** Reproduced against the real CLI: a permission-denied
+  `write_to_file` is reported by agy with step state `DONE`, overall
+  `status: SUCCESS`, and no error text — the denial appears only as
+  `denied_actions` on the final result, *after* the step events have already
+  been counted. pi-agy therefore listed the path in `files_written` and printed
+  `✓ step N · ✎ <file>` for a file that was never created, which defeats the
+  whole "evidence the orchestrator verifies" workflow. Now:
+  - New `splitExistingFiles(files, workspace, exists?)` in `src/runner.ts`
+    resolves every claimed path against the workspace and keeps only those that
+    exist; phantom paths are dropped from `files_written` and reported as a
+    warning ("N files the agent reported writing do not exist on disk").
+  - Only a step whose state is exactly `DONE` counts as success; `ERROR`-state
+    steps (e.g. a write into a missing directory) no longer contribute evidence.
+  - `StepRecord.state` gains `"failed"`; the run log renders `✗` for failed
+    steps and the card header shows `· N failed`.
+  - Any `denied_actions` and any failed step now emit an explicit warning, so a
+    lane that silently did nothing can no longer look like a clean success.
+- **`agy_fleet` results are readable by the orchestrator.** Per-lane responses
+  were hard-truncated to 600 characters and newlines flattened, so a lane's
+  actual output was largely lost; an empty response rendered as a blank line
+  (`??` never falls back for `""`) and per-lane warnings were dropped entirely.
+  Lane responses now preserve line structure with a generous 4,000-character
+  cap and an explicit truncation marker, empty responses render as
+  `(no response)`, and each lane's warnings are printed.
+- **An aborted fleet returns its partial results.** `executeFleet` threw
+  `agy_fleet aborted` and discarded every lane result; it now returns the board
+  with per-lane evidence it collected before the stop and marks the run as
+  stopped early.
+- **Registry listener isolation and defensive copies.** A throwing FleetView
+  subscriber could skip the remaining listeners in `emitNow()` and crash the
+  event loop from the `emitSoon()` timer; listeners are now invoked through a
+  `try/catch`. `patch()`/`finish()` also clone array fields
+  (`recent`, `filesWritten`, `commandsRun`, `filesTouched`) so a caller mutating
+  its own array cannot corrupt stored state or defeat change detection.
+- **FleetView/Inspector hardening.** `j`/`k` navigation now uses `matchesKey` so
+  it works under the Kitty keyboard protocol; the roster windows around the
+  selection instead of letting the marker scroll off past six runs; the 500 ms
+  refresh timer is armed only while runs are active instead of ticking through
+  idle sessions; width is sanitized before layout; the editor-focus probe is
+  wrapped in `try/catch`; and the inspector re-clamps its selection against a
+  shrinking registry, pads the title row so the frame stays rectangular, and
+  guards its timer with a `disposed` flag.
 
 ## [0.2.1] - 2026-09-06
 

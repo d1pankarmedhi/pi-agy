@@ -13,21 +13,36 @@
 
 import type { Theme, ToolRenderResultOptions, AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { formatDuration, isWriteTool, toDisplayPath, type LiveActivity, type StepRecord } from "./status.ts";
+import {
+	activityFreshnessText,
+	activityState,
+	formatDuration,
+	isWriteTool,
+	toDisplayPath,
+	toolDurationMs,
+	type LiveActivity,
+	type StepRecord,
+} from "./status.ts";
 import {
 	compactNumber,
 	divider,
 	fitParts,
+	formatTokens,
+	frameAt,
 	listSection,
 	oneLine,
 	pad,
 	plural,
 	row,
+	spinnerGlyph,
+	treeBranch,
 	trunc,
+	truncLine,
 	View,
 	visibleWidth,
 	wrap,
 	wrapCount,
+	type RenderComponent,
 	type ThemeLike,
 } from "./ui.ts";
 
@@ -35,7 +50,7 @@ import {
 // Shapes
 // ---------------------------------------------------------------------------
 
-export type AgyPreset = "run" | "explore" | "code" | "vision";
+export type AgyPreset = "run" | "code" | "vision" | "role";
 
 export interface AgyMeta {
 	preset: AgyPreset;
@@ -47,10 +62,14 @@ export interface AgyMeta {
 	continueConv?: boolean;
 	conversation?: string;
 	agent?: string;
+	/** Specialist role id, when the run used `agy_role`. */
+	role?: string;
 }
 
 export interface AgyCallArgs {
 	prompt?: string;
+	/** agy_role: the specialist role id. */
+	role?: string;
 	/** agy_vision: image files to inspect. */
 	images?: string[];
 	/** agy_vision: page URL to screenshot before inspecting. */
@@ -91,6 +110,11 @@ export interface SingleDetails {
 	recent?: StepRecord[];
 	preview?: string;
 	meta?: AgyMeta;
+	lastActivityAt?: number;
+	toolStartedAt?: number;
+	outputTail?: string[];
+	tokens?: number;
+	turns?: number;
 	// final-result fields
 	steps?: StepRecord[];
 	files_written?: string[];
@@ -112,6 +136,7 @@ export interface FleetLaneDetails {
 	workspace?: string;
 	status: "queued" | "running" | "done" | "failed" | "aborted";
 	error?: string;
+	warnings?: string[];
 	activity?: LiveActivity;
 	elapsedMs?: number;
 	response?: string;
@@ -143,9 +168,9 @@ export interface FleetDetails {
 
 const PRESETS: Record<AgyPreset, { title: string; tag: string; readOnly: boolean }> = {
 	run: { title: "agy", tag: "delegate", readOnly: false },
-	explore: { title: "agy_explore", tag: "read-only", readOnly: true },
 	code: { title: "agy_code", tag: "implement", readOnly: false },
 	vision: { title: "agy_vision", tag: "image", readOnly: true },
+	role: { title: "agy_role", tag: "specialist", readOnly: false },
 };
 
 const RESPONSE_COLLAPSED_LINES = 34;
@@ -154,6 +179,19 @@ const LOG_COLLAPSED = 8;
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * Belt-and-braces width clamp for the pure builders.
+ *
+ * `View` already clamps on the way to the terminal, but `View` is not the only
+ * consumer (tests and `renderShell: "self"` callers use the builders directly),
+ * so every builder clamps its own output too: no caller can receive a line
+ * wider than it asked for, at any width from 1 upward. `trunc` is
+ * ANSI-preserving, so styling survives the clamp.
+ */
+function clampLines(lines: string[], width: number): string[] {
+	return lines.map((line) => trunc(line.replace(/\r?\n/g, " "), width));
 }
 
 function phaseGlyph(phase: LiveActivity["phase"] | undefined): string {
@@ -252,8 +290,9 @@ function activityText(d: SingleDetails): string {
 	return "thinking";
 }
 
-function stepGlyph(step: StepRecord): { icon: string; color: "accent" | "success" } {
+function stepGlyph(step: StepRecord): { icon: string; color: "accent" | "success" | "error" } {
 	if (step.state === "active") return { icon: "▸", color: "accent" };
+	if (step.state === "failed") return { icon: "✗", color: "error" };
 	return { icon: "✓", color: "success" };
 }
 
@@ -301,9 +340,9 @@ function runLogLines(
 	theme: ThemeLike,
 	expanded: boolean
 ): string[] {
-	const done = (steps ?? []).filter((s) => s.state === "done");
-	if (!done.length) return [];
-	const shown = expanded ? done : done.slice(-LOG_COLLAPSED);
+	const terminal = (steps ?? []).filter((s) => s.state !== "active");
+	if (!terminal.length) return [];
+	const shown = expanded ? terminal : terminal.slice(-LOG_COLLAPSED);
 	const out: string[] = [];
 	for (const s of shown) {
 		const where = trunc(stepWhat(s), Math.max(8, width - 10));
@@ -311,13 +350,13 @@ function runLogLines(
 			"  " +
 				theme.fg("dim", String(s.index).padStart(2, " ")) +
 				theme.fg("borderMuted", "  ") +
-				theme.fg("success", "✓") +
+				theme.fg(s.state === "failed" ? "error" : "success", s.state === "failed" ? "✗" : "✓") +
 				" " +
 				theme.fg("text", where)
 		);
 	}
-	if (!expanded && done.length > shown.length) {
-		out.unshift(theme.fg("dim", `  … ${done.length - shown.length} earlier steps`));
+	if (!expanded && terminal.length > shown.length) {
+		out.unshift(theme.fg("dim", `  … ${terminal.length - shown.length} earlier steps`));
 	}
 	return out;
 }
@@ -335,6 +374,8 @@ export function singleCallLines(
 	const def = PRESETS[preset] ?? PRESETS.run;
 	const lines: string[] = [];
 	const badges = [theme.fg("muted", def.tag)];
+	// A role run is identified by its specialist, not by the generic preset.
+	if (args.role) badges.unshift(theme.fg("accent", args.role));
 	if (args.allowCommands) badges.push(theme.fg("warning", "shell"));
 	if (args.continueConv || args.conversation) badges.push(theme.fg("accent", "continue"));
 	lines.push(
@@ -371,14 +412,65 @@ export function singleCallLines(
 		const preview = wrap(prompt, Math.max(1, width - 2), width >= 72 ? 2 : 1);
 		for (const line of preview) lines.push("  " + theme.fg("text", line));
 	}
-	return lines;
+	return clampLines(lines, width);
+}
+
+function formatToolDuration(ms: number): string {
+	const clamped = Math.max(0, ms);
+	const sec = clamped / 1000;
+	if (sec < 60) {
+		return `${sec.toFixed(1)}s`;
+	}
+	return formatDuration(clamped);
+}
+
+function seedFromRun(d: SingleDetails): number {
+	const id = d.conversation_id ?? d.meta?.conversation ?? d.meta?.agent;
+	if (id) {
+		let h = 0;
+		for (let i = 0; i < id.length; i++) {
+			h = (h * 31 + id.charCodeAt(i)) | 0;
+		}
+		return Math.abs(h);
+	}
+	return d.step ?? 0;
+}
+
+function seedFromLane(lane: FleetLaneDetails): number {
+	const id = lane.id;
+	if (!id) return 0;
+	let h = 0;
+	for (let i = 0; i < id.length; i++) {
+		h = (h * 31 + id.charCodeAt(i)) | 0;
+	}
+	return Math.abs(h);
+}
+
+function asLiveActivity(d: SingleDetails): LiveActivity {
+	return {
+		step: d.step ?? 0,
+		phase: d.phase ?? "thinking",
+		tool: d.tool,
+		file: d.file,
+		command: d.command,
+		stepsDone: d.stepsDone ?? 0,
+		filesTouched: d.filesTouched ?? [],
+		elapsedMs: d.elapsedMs ?? 0,
+		lastActivityAt: d.lastActivityAt,
+		toolStartedAt: d.toolStartedAt,
+		outputTail: d.outputTail,
+		tokens: d.tokens ?? (typeof d.usage?.total_tokens === "number" ? d.usage.total_tokens : undefined),
+		turns: d.turns ?? d.num_turns,
+	};
 }
 
 export function singleActivityLines(
 	_preset: AgyPreset,
 	d: SingleDetails,
 	width: number,
-	theme: ThemeLike
+	theme: ThemeLike,
+	frame?: number,
+	now?: number
 ): string[] {
 	const phase = d.phase ?? "thinking";
 	const lines: string[] = [];
@@ -396,31 +488,97 @@ export function singleActivityLines(
 		label;
 	lines.push(row(left, elapsed >= 1000 ? theme.fg("dim", formatDuration(elapsed)) : "", width));
 
-	const metrics = buildMetrics(d, theme, Math.max(0, width - 2));
-	if (metrics) lines.push("  " + metrics);
+	const live = asLiveActivity(d);
+	const animFrame = frame ?? frameAt(100, now);
+	const spinner = spinnerGlyph(seedFromRun(d), animFrame);
+	const spinnerStr = theme.fg("accent", spinner);
 
-	const recent = (d.recent ?? []).slice(-RECENT_STEPS);
-	if (recent.length) {
-		lines.push(divider(width, theme));
-		for (const s of recent) {
-			const { icon, color } = stepGlyph(s);
-			const where = trunc(stepWhat(s), Math.max(8, width - 10));
-			lines.push(
-				"  " +
-					theme.fg(color, icon) +
-					" " +
-					theme.fg("dim", String(s.index).padStart(2, " ")) +
-					"  " +
-					theme.fg(s.state === "active" ? "text" : "toolOutput", where)
-			);
-		}
+	const parts: string[] = [];
+	const freshness = activityFreshnessText(live, now);
+	if (freshness) {
+		const state = activityState(live, now);
+		const fColor = state === "needs_attention" ? "warning" : "muted";
+		parts.push(theme.fg(fColor, freshness));
 	}
 
-	const preview = (d.preview ?? "").trim();
-	if (d.phase === "writing" && preview) {
-		lines.push(divider(width, theme));
-		const tail = wrap(preview, Math.max(1, width - 2), 4);
-		for (const line of tail) lines.push("  " + theme.fg("dim", line));
+	const steps = d.toolSteps ?? d.steps?.length ?? d.stepsDone ?? 0;
+	const files = d.files_written?.length ?? d.filesTouched?.length ?? 0;
+	const commands = d.commands_run?.length ?? 0;
+	if (steps) parts.push(theme.fg("muted", "steps ") + theme.fg("accent", String(steps)));
+	if (files) parts.push(theme.fg("muted", "files ") + theme.fg("accent", String(files)));
+	if (commands) parts.push(theme.fg("muted", "commands ") + theme.fg("accent", String(commands)));
+	const turns = live.turns ?? d.num_turns;
+	if (turns) parts.push(theme.fg("muted", "turns ") + theme.fg("accent", String(turns)));
+	const tokenCount = live.tokens ?? (typeof d.usage?.total_tokens === "number" ? d.usage.total_tokens : undefined);
+	if (typeof tokenCount === "number" && tokenCount > 0) {
+		parts.push(theme.fg("muted", "↓ ") + theme.fg("accent", `${formatTokens(tokenCount)} tokens`));
+	}
+
+	const sep = theme.fg("borderMuted", " · ");
+	const prefix = "  " + spinnerStr + (parts.length ? " " : "");
+	const budget = Math.max(0, width - visibleWidth(prefix));
+	const metricsStr = fitParts(parts, budget, sep);
+	lines.push(trunc(prefix + metricsStr, width));
+
+	const recent = (d.recent ?? []).slice(-RECENT_STEPS);
+	for (let i = 0; i < recent.length; i++) {
+		const s = recent[i]!;
+		const isLast = i === recent.length - 1;
+		const branch = treeBranch(1, isLast);
+		const { icon, color } = stepGlyph(s);
+		const pre =
+			"  " +
+			theme.fg("borderMuted", branch) +
+			theme.fg(color, icon) +
+			" " +
+			theme.fg("dim", String(s.index).padStart(2, " ")) +
+			"  ";
+		const preW = visibleWidth(pre);
+		const whereBudget = Math.max(0, width - preW);
+		const where = trunc(stepWhat(s), whereBudget);
+		lines.push(trunc(pre + theme.fg(s.state === "active" ? "text" : "toolOutput", where), width));
+	}
+
+	const durMs = toolDurationMs(live, now);
+	const durStr = durMs !== undefined ? ` ${formatToolDuration(durMs)}` : "";
+	const tailLines = (d.outputTail ?? []).map((l) => oneLine(l)).filter(Boolean).slice(-3);
+
+	if (tailLines.length > 0) {
+		for (let i = 0; i < tailLines.length; i++) {
+			const isLast = i === tailLines.length - 1;
+			const dur = isLast ? durStr : "";
+			const p = "  " + theme.fg("borderMuted", "⎿  ");
+			const durPart = dur ? theme.fg("dim", dur) : "";
+			const b = Math.max(0, width - visibleWidth(p) - visibleWidth(durPart));
+			const content = theme.fg("dim", trunc(tailLines[i]!, b)) + durPart;
+			lines.push(trunc(p + content, width));
+		}
+	} else if (d.preview && d.preview.trim()) {
+		const previewLines = wrap(d.preview.trim(), Math.max(1, width - 5), 3);
+		for (let i = 0; i < previewLines.length; i++) {
+			const isLast = i === previewLines.length - 1;
+			const dur = isLast ? durStr : "";
+			const p = "  " + theme.fg("borderMuted", "⎿  ");
+			const durPart = dur ? theme.fg("dim", dur) : "";
+			const b = Math.max(0, width - visibleWidth(p) - visibleWidth(durPart));
+			const content = theme.fg("dim", trunc(previewLines[i]!, b)) + durPart;
+			lines.push(trunc(p + content, width));
+		}
+	} else {
+		const detail = d.command
+			? `$ ${oneLine(d.command)}`
+			: d.file
+				? `${toolIcon(d.tool)} ${oneLine(d.file)}`
+				: d.tool && d.tool !== "run_command"
+					? d.tool.replace(/_/g, " ")
+					: "";
+		if (detail || durStr) {
+			const p = "  " + theme.fg("borderMuted", "⎿  ");
+			const durPart = durStr ? theme.fg("dim", durStr) : "";
+			const b = Math.max(0, width - visibleWidth(p) - visibleWidth(durPart));
+			const content = theme.fg("dim", trunc(detail, b)) + durPart;
+			lines.push(trunc(p + content, width));
+		}
 	}
 	return lines;
 }
@@ -500,12 +658,14 @@ export function singleResultLines(
 	const log = runLogLines(d.steps, width, theme, expanded);
 	if (log.length) {
 		lines.push(divider(width, theme));
-		const totalSteps = (d.steps ?? []).filter((s) => s.state === "done").length;
+		const totalSteps = (d.steps ?? []).filter((s) => s.state !== "active").length;
+		const failedSteps = (d.steps ?? []).filter((s) => s.state === "failed").length;
 		lines.push(
 			trunc(
 				"  " +
 					theme.fg("muted", "run log") +
 					theme.fg("dim", `  ${expanded ? totalSteps : Math.min(totalSteps, LOG_COLLAPSED)} of ${totalSteps} steps`) +
+					(failedSteps ? theme.fg("error", `  ·  ${failedSteps} failed`) : "") +
 					(!expanded && totalSteps > LOG_COLLAPSED ? theme.fg("dim", "  ·  Ctrl+O to expand") : ""),
 				width
 			)
@@ -530,7 +690,7 @@ export function singleResultLines(
 			);
 		}
 	}
-	return lines;
+	return clampLines(lines, width);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +737,7 @@ export function fleetCallLines(args: FleetCallArgs, width: number, theme: ThemeL
 		);
 	}
 	if (tasks.length > cap) lines.push("  " + theme.fg("dim", `… +${tasks.length - cap} more lanes`));
-	return lines;
+	return clampLines(lines, width);
 }
 
 function laneElapsed(lane: FleetLaneDetails): string {
@@ -588,7 +748,7 @@ function laneElapsed(lane: FleetLaneDetails): string {
 	return "";
 }
 
-function laneActivity(lane: FleetLaneDetails): string {
+function laneActivity(lane: FleetLaneDetails, now?: number): string {
 	if (lane.status === "queued") return "waiting";
 	if (lane.status === "failed" || lane.status === "aborted") {
 		return lane.error ? trunc(oneLine(lane.error), 60) : lane.status;
@@ -601,14 +761,26 @@ function laneActivity(lane: FleetLaneDetails): string {
 	}
 	const a: LiveActivity | undefined = lane.activity;
 	if (!a) return "starting";
-	if (a.command) return `$ ${oneLine(a.command)}`;
-	if (a.file) return `${toolIcon(a.tool)} ${a.file}`;
-	if (a.phase === "writing") return "writing response";
-	if (a.tool && a.tool !== "run_command") return a.tool.replace(/_/g, " ");
-	return "thinking";
+	const freshness = activityFreshnessText(a, now);
+	const target = a.command
+		? `$ ${oneLine(a.command)}`
+		: a.file
+			? `${toolIcon(a.tool)} ${a.file}`
+			: a.phase === "writing"
+				? "writing response"
+				: a.tool && a.tool !== "run_command"
+					? a.tool.replace(/_/g, " ")
+					: "thinking";
+	return freshness ? `${target} · ${freshness}` : target;
 }
 
-export function fleetBoardLines(d: FleetDetails, width: number, theme: ThemeLike): string[] {
+export function fleetBoardLines(
+	d: FleetDetails,
+	width: number,
+	theme: ThemeLike,
+	frame?: number,
+	now?: number
+): string[] {
 	const lanes = d.lanes ?? [];
 	const done = lanes.filter((l) => l.status === "done").length;
 	const failed = lanes.filter((l) => l.status === "failed" || l.status === "aborted").length;
@@ -633,12 +805,17 @@ export function fleetBoardLines(d: FleetDetails, width: number, theme: ThemeLike
 	);
 	lines.push(divider(width, theme));
 
+	const animFrame = frame ?? frameAt(100, now);
 	const wide = width >= 84;
 	const idWidth = Math.min(14, Math.max(2, ...lanes.map((l) => (l.id ?? "").length)));
 	for (const lane of lanes) {
-		const glyph = theme.fg(stateColor(lane.status), stateGlyph(lane.status));
+		const glyph =
+			lane.status === "running"
+				? theme.fg("accent", spinnerGlyph(seedFromLane(lane), animFrame))
+				: theme.fg(stateColor(lane.status), stateGlyph(lane.status));
 		const id = theme.fg("accent", pad(trunc(lane.id ?? "?", idWidth), idWidth));
 		const elapsedText = laneElapsed(lane);
+		const act = laneActivity(lane, now);
 		if (wide) {
 			const word = theme.fg(stateColor(lane.status), stateWord(lane.status).padEnd(8));
 			const stepText =
@@ -646,13 +823,13 @@ export function fleetBoardLines(d: FleetDetails, width: number, theme: ThemeLike
 					? theme.fg("dim", `step ${lane.activity.step}`)
 					: theme.fg("dim", "—");
 			const left = `${glyph} ${id}  ${word}  ${stepText}  `;
-			const target = trunc(laneActivity(lane), Math.max(4, width - 34 - idWidth));
+			const target = trunc(act, Math.max(4, width - 34 - idWidth));
 			lines.push(row(left + theme.fg("text", target), theme.fg("dim", elapsedText), width));
 		} else {
 			const budget = Math.max(4, width - idWidth - 6 - visibleWidth(elapsedText) - (elapsedText ? 2 : 0));
 			lines.push(
 				row(
-					`${glyph} ${id}  ` + theme.fg("text", trunc(laneActivity(lane), budget)),
+					`${glyph} ${id}  ` + theme.fg("text", trunc(act, budget)),
 					elapsedText ? theme.fg("dim", elapsedText) : "",
 					width
 				)
@@ -760,7 +937,7 @@ export function fleetResultLines(
 		lines.push("  " + theme.fg("muted", "evidence"));
 		for (const line of evidence) lines.push("    " + theme.fg("text", trunc(line, Math.max(4, width - 4))));
 	}
-	return lines;
+	return clampLines(lines, width);
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +968,89 @@ function errorOf(result: AgentToolResult<unknown>, context: unknown): string | u
 	return resultText(result) || "the agy tool failed";
 }
 
+export type AgyRenderState = { animationTimer?: ReturnType<typeof setInterval> };
+
+interface ContextWithState {
+	invalidate?: () => void;
+	state?: AgyRenderState;
+	isError?: boolean;
+}
+
+/**
+ * Animated component wrapper: rebuilds lines on every render(width) using a
+ * time-derived frame, and repaints via context.invalidate() every 100 ms while
+ * the result is partial. The timer is stored on context.state so a replaced
+ * component's timer is cleared, and cleared on final render or dispose/invalidate.
+ */
+export class LiveView implements RenderComponent {
+	private readonly build: (width: number, frame: number) => string[];
+	private readonly isPartial: boolean;
+	private readonly ctx?: ContextWithState;
+	private timer?: ReturnType<typeof setInterval>;
+
+	constructor(
+		build: (width: number, frame: number) => string[],
+		isPartial: boolean,
+		context?: unknown
+	) {
+		this.build = build;
+		this.isPartial = isPartial;
+		if (context && typeof context === "object") {
+			const rec = context as Record<string, unknown>;
+			if (!rec.state || typeof rec.state !== "object") {
+				rec.state = {};
+			}
+			this.ctx = rec as ContextWithState;
+		}
+	}
+
+	private clearTimer(): void {
+		if (this.timer) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		}
+		if (this.ctx?.state?.animationTimer) {
+			clearInterval(this.ctx.state.animationTimer);
+			this.ctx.state.animationTimer = undefined;
+		}
+	}
+
+	render(width: number): string[] {
+		const w = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+		this.clearTimer();
+
+		if (this.isPartial && this.ctx?.invalidate) {
+			const timer = setInterval(() => {
+				this.ctx?.invalidate?.();
+			}, 100);
+			if (typeof timer.unref === "function") {
+				timer.unref();
+			}
+			this.timer = timer;
+			if (this.ctx.state) {
+				this.ctx.state.animationTimer = timer;
+			}
+		}
+
+		const frame = frameAt(100);
+		try {
+			return this.build(w, frame).map((line) =>
+				truncLine(String(line).replace(/\r?\n/g, " "), w)
+			);
+		} catch {
+			return [];
+		}
+	}
+
+	invalidate(): void {
+		this.clearTimer();
+	}
+
+	dispose(): void {
+		this.clearTimer();
+	}
+}
+
 /** renderCall / renderResult for the single-run presets. */
 export function singleRenderers(preset: AgyPreset): {
 	renderCall: (args: AgyCallArgs, theme: Theme, context: unknown) => Component;
@@ -809,10 +1069,13 @@ export function singleRenderers(preset: AgyPreset): {
 			const errorText = errorOf(result, context);
 			const details: SingleDetails = { ...detailsOf<SingleDetails>(result.details), errorText };
 			const effective = details.meta?.preset ?? preset;
-			return new View((width) =>
-				options.isPartial
-					? singleActivityLines(effective, details, width, theme)
-					: singleResultLines(effective, details, width, theme, options.expanded)
+			return new LiveView(
+				(width, frame) =>
+					options.isPartial
+						? singleActivityLines(effective, details, width, theme, frame)
+						: singleResultLines(effective, details, width, theme, options.expanded),
+				options.isPartial,
+				context
 			);
 		},
 	};
@@ -835,11 +1098,15 @@ export function fleetRenderers(): {
 		renderResult(result, options, theme, context) {
 			const errorText = errorOf(result, context);
 			const details: FleetDetails = { ...detailsOf<FleetDetails>(result.details), errorText };
-			return new View((width) =>
-				options.isPartial
-					? fleetBoardLines(details, width, theme)
-					: fleetResultLines(details, width, theme, options.expanded)
+			return new LiveView(
+				(width, frame) =>
+					options.isPartial
+						? fleetBoardLines(details, width, theme, frame)
+						: fleetResultLines(details, width, theme, options.expanded),
+				options.isPartial,
+				context
 			);
 		},
 	};
 }
+

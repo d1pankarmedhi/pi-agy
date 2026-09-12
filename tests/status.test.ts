@@ -13,6 +13,17 @@ import {
 	type LiveActivity,
 	type StepRecord,
 } from "../index.ts";
+import {
+	ACTIVITY_LONG_RUNNING_MS,
+	ACTIVITY_NEEDS_ATTENTION_MS,
+	activityAgeMs,
+	activityFreshnessText,
+	activityState,
+	idleActivity,
+	liveDetail,
+	toolDurationMs,
+	type ActivityState,
+} from "../src/status.ts";
 
 // ---------------------------------------------------------------------------
 // formatDuration
@@ -201,4 +212,129 @@ test("formatFleetBoard renders a live board with per-lane lines", () => {
 	assert.match(rows[1]!, /✓ \[tests\] done · 1 file · 1 command · 57s/);
 	assert.match(rows[2]!, /✗ \[lint\] failed · agy ERROR: timeout · 20s/);
 	assert.match(rows[3]!, /○ \[docs\] waiting/);
+});
+
+// ---------------------------------------------------------------------------
+// Liveness, freshness, and duration helpers (§3)
+// ---------------------------------------------------------------------------
+
+test("activityAgeMs returns undefined when lastActivityAt is undefined", () => {
+	const live = idleActivity();
+	assert.equal(activityAgeMs(live), undefined);
+	assert.equal(activityAgeMs(live, 100_000), undefined);
+});
+
+test("activityAgeMs computes elapsed time since lastActivityAt, clamped to 0", () => {
+	const live: LiveActivity = { ...idleActivity(), lastActivityAt: 100_000 };
+	assert.equal(activityAgeMs(live, 105_000), 5_000);
+	assert.equal(activityAgeMs(live, 100_000), 0);
+	assert.equal(activityAgeMs(live, 95_000), 0);
+});
+
+test("activityState bucket boundaries: undefined, <45s, exactly 45s, <120s, exactly 120s, >120s", () => {
+	const now = 500_000;
+	assert.equal(ACTIVITY_LONG_RUNNING_MS, 45_000);
+	assert.equal(ACTIVITY_NEEDS_ATTENTION_MS, 120_000);
+
+	// undefined age -> "active"
+	assert.equal(activityState(idleActivity(), now), "active");
+
+	// age < ACTIVITY_LONG_RUNNING_MS -> "active"
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now }, now), "active");
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 44_999 }, now), "active");
+
+	// exactly at ACTIVITY_LONG_RUNNING_MS (45_000) -> "active_long_running"
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 45_000 }, now), "active_long_running");
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 45_001 }, now), "active_long_running");
+
+	// age < ACTIVITY_NEEDS_ATTENTION_MS (120_000) -> "active_long_running"
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 119_999 }, now), "active_long_running");
+
+	// exactly at ACTIVITY_NEEDS_ATTENTION_MS (120_000) -> "needs_attention"
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 120_000 }, now), "needs_attention");
+	assert.equal(activityState({ ...idleActivity(), lastActivityAt: now - 120_001 }, now), "needs_attention");
+});
+
+test("activityFreshnessText reproduces pi-subagents wording for every branch in spec §1", () => {
+	const now = 500_000;
+
+	// Branch 1: lastActivityAt === undefined and state needs_attention -> "needs attention"
+	assert.equal(activityFreshnessText(idleActivity(), now, "needs_attention"), "needs attention");
+
+	// Branch 2: lastActivityAt === undefined and state active_long_running -> "active but long-running"
+	assert.equal(activityFreshnessText(idleActivity(), now, "active_long_running"), "active but long-running");
+
+	// Branch 3: lastActivityAt === undefined and state active -> undefined
+	assert.equal(activityFreshnessText(idleActivity(), now), undefined);
+	assert.equal(activityFreshnessText(idleActivity(), now, "active"), undefined);
+
+	// Branch 4: age < 1s -> "active now"
+	const liveNow: LiveActivity = { ...idleActivity(), lastActivityAt: now - 500 };
+	assert.equal(activityFreshnessText(liveNow, now), "active now");
+	const live0s: LiveActivity = { ...idleActivity(), lastActivityAt: now };
+	assert.equal(activityFreshnessText(live0s, now), "active now");
+
+	// Branch 5: age < 60s (and < 45s, so state is active) -> "active 12s ago"
+	const live12s: LiveActivity = { ...idleActivity(), lastActivityAt: now - 12_000 };
+	assert.equal(activityFreshnessText(live12s, now), "active 12s ago");
+	const live44s: LiveActivity = { ...idleActivity(), lastActivityAt: now - 44_000 };
+	assert.equal(activityFreshnessText(live44s, now), "active 44s ago");
+
+	// Branch 6: state active_long_running:
+	// exactly 45s: "active but long-running · last activity 45s ago"
+	const live45s: LiveActivity = { ...idleActivity(), lastActivityAt: now - 45_000 };
+	assert.equal(activityFreshnessText(live45s, now), "active but long-running · last activity 45s ago");
+
+	// 1m (e.g. 60s, 70s): "active but long-running · last activity 1m ago"
+	const live60s: LiveActivity = { ...idleActivity(), lastActivityAt: now - 60_000 };
+	assert.equal(activityFreshnessText(live60s, now), "active but long-running · last activity 1m ago");
+	const live1m: LiveActivity = { ...idleActivity(), lastActivityAt: now - 70_000 };
+	assert.equal(activityFreshnessText(live1m, now), "active but long-running · last activity 1m ago");
+	const live119s: LiveActivity = { ...idleActivity(), lastActivityAt: now - 119_999 };
+	assert.equal(activityFreshnessText(live119s, now), "active but long-running · last activity 1m ago");
+
+	// Branch 7: state needs_attention:
+	// exactly 120s (2m): "no activity for 2m"
+	const live2m: LiveActivity = { ...idleActivity(), lastActivityAt: now - 120_000 };
+	assert.equal(activityFreshnessText(live2m, now), "no activity for 2m");
+	const live3m: LiveActivity = { ...idleActivity(), lastActivityAt: now - 180_000 };
+	assert.equal(activityFreshnessText(live3m, now), "no activity for 3m");
+});
+
+test("toolDurationMs computes duration of active tool step or returns undefined", () => {
+	// Undefined toolStartedAt
+	assert.equal(toolDurationMs(idleActivity()), undefined);
+	assert.equal(toolDurationMs(idleActivity(), 100_000), undefined);
+
+	// Defined toolStartedAt
+	const live: LiveActivity = { ...idleActivity(), toolStartedAt: 100_000 };
+	assert.equal(toolDurationMs(live, 103_400), 3_400);
+	assert.equal(toolDurationMs(live, 100_000), 0);
+	assert.equal(toolDurationMs(live, 90_000), 0);
+});
+
+test("liveDetail includes new fields when present and omits them when absent", () => {
+	const base = idleActivity();
+	const baseDetail = liveDetail(base);
+	assert.equal("lastActivityAt" in baseDetail, false);
+	assert.equal("toolStartedAt" in baseDetail, false);
+	assert.equal("outputTail" in baseDetail, false);
+	assert.equal("tokens" in baseDetail, false);
+	assert.equal("turns" in baseDetail, false);
+
+	const full: LiveActivity = {
+		...base,
+		lastActivityAt: 100_000,
+		toolStartedAt: 102_000,
+		outputTail: ["line 1", "line 2"],
+		tokens: 4200,
+		turns: 3,
+	};
+	const fullDetail = liveDetail(full);
+	assert.equal(fullDetail.lastActivityAt, 100_000);
+	assert.equal(fullDetail.toolStartedAt, 102_000);
+	assert.deepEqual(fullDetail.outputTail, ["line 1", "line 2"]);
+	assert.notEqual(fullDetail.outputTail, full.outputTail);
+	assert.equal(fullDetail.tokens, 4200);
+	assert.equal(fullDetail.turns, 3);
 });

@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-12
+
+### Changed
+
+- README install examples now point at the current release instead of the
+  stale `0.2.1` pin.
+
 ## [0.3.0] - 2026-09-12
 
 ### Added

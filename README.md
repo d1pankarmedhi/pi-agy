@@ -41,10 +41,10 @@ leaves **zero residue**.
 ```bash
 # from npm (recommended; pin a version for reproducibility)
 pi install npm:@dmpunk/pi-agy
-pi install npm:@dmpunk/pi-agy@0.3.0
+pi install npm:@dmpunk/pi-agy@0.3.1
 
 # from GitHub at a release tag
-pi install git:github.com/d1pankarmedhi/pi-agy@v0.3.0
+pi install git:github.com/d1pankarmedhi/pi-agy@v0.3.1
 
 # from a local checkout (development)
 pi install /absolute/path/to/pi-agy

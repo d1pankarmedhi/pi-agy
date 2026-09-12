@@ -62,11 +62,26 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Determine npm dist-tag
+        id: dist
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF_NAME}"
+          if [[ "${ref}" == *-* ]]; then
+            tag="${ref#*-}"
+            tag="${tag%%.*}"
+          else
+            tag="latest"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Publishing under dist-tag '${tag}'"
+
       # `--provenance` publishes a signed SLSA attestation tying the tarball to
       # this workflow run. When NPM_TOKEN is unset, npm uses OIDC trusted
       # publishing (id-token: write above); when it is set, the token is used.
+      # Prereleases are kept off `latest` via the derived dist-tag.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag "${{ steps.dist.outputs.tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

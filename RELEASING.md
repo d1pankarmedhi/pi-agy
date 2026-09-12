@@ -130,13 +130,13 @@ trusted publisher and delete the secret.
 
 ## Prereleases
 
-Use a prerelease suffix (`v0.3.0-beta.1`, `v0.3.0-rc.1`). The workflow marks
-those GitHub Releases as prereleases. By default npm publishes them under the
-`latest` dist-tag only if you pass `--tag`; if you need a dedicated dist-tag,
-publish the prerelease manually:
+Use a prerelease suffix (`v0.3.0-beta.1`, `v0.3.0-rc.1`). The `Release` workflow
+derives the npm dist-tag from the suffix (`beta`, `rc`, …) so a prerelease is
+never published to `latest`, and marks the GitHub Release as a prerelease.
+Testers install it explicitly:
 
 ```bash
-npm publish --tag beta --provenance --access public
+pi install npm:pi-agy-cli@0.3.0-beta.1
 ```
 
 ## Hotfixes

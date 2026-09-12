@@ -9,6 +9,16 @@ dipankarmedhi11@gmail.com.
 You should receive a response within 72 hours. Please include steps to
 reproduce, affected versions, and (if possible) a fix suggestion.
 
+## Supported Versions
+
+Only the latest release receives security fixes. pi-agy runs with full system
+access, so upgrade to the newest version:
+
+| Version        | Supported          |
+| -------------- | ------------------ |
+| latest release | :white_check_mark: |
+| older releases | :x:                |
+
 ## Security notes for users
 
 - **Elevated privileges**: with `allowCommands` enabled (default), the
@@ -20,5 +30,8 @@ reproduce, affected versions, and (if possible) a fix suggestion.
   prompt you provide.
 - **Zero footprint**: this extension writes nothing to disk. Uninstalling the
   package (`pi remove`) leaves no residue.
+- **Verified publishes**: npm releases are published from GitHub Actions with a
+  signed [provenance attestation](https://docs.npmjs.com/generating-provenance-statements).
+  You can verify a tarball's origin with `npm audit signatures`.
 - **Review before install**: pi packages run with full system access. Only
   install packages from sources you trust.

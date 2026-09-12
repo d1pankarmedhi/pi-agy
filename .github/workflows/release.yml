@@ -1,0 +1,79 @@
+name: Release
+
+# Tag-driven release: pushing an annotated `vX.Y.Z` tag on `main` publishes to
+# npm and opens a GitHub Release. `workflow_dispatch` re-runs a release for an
+# existing tag (pick the tag as the ref in the Actions UI).
+#
+# Auth: npm Trusted Publishing (OIDC) is preferred and needs no secret. If the
+# repository secret `NPM_TOKEN` is set it is used instead, which is required for
+# the very first publish (npm cannot attach a trusted publisher before the
+# package exists). See RELEASING.md.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm provenance / trusted publishing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    # For an approval gate, create a GitHub Environment named `release`, add it
+    # to the npm Trusted Publisher config, and uncomment:
+    # environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          pkg_version="$(node -p "require('./package.json').version")"
+          ref="${GITHUB_REF_NAME}"
+          if [ "${ref}" != "v${pkg_version}" ]; then
+            echo "::error::Tag '${ref}' does not match package.json version 'v${pkg_version}'."
+            echo "Bump the version, commit to main, and tag the commit (see RELEASING.md)."
+            exit 1
+          fi
+          echo "Releasing ${ref}"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # `--provenance` publishes a signed SLSA attestation tying the tarball to
+      # this workflow run. When NPM_TOKEN is unset, npm uses OIDC trusted
+      # publishing (id-token: write above); when it is set, the token is used.
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Open-source release infrastructure and npm packaging.** GitHub Actions now
+  provide `CI` (typecheck + tests on Node 22/24/26, publishable-tarball check,
+  advisory runtime audit), `Release` (tag-driven npm publish with a signed
+  provenance attestation and a generated GitHub Release), and `CodeQL`; plus
+  Dependabot, issue/PR templates, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and
+  `RELEASING.md`. `package.json` gains `engines.node >= 22.18`, an `exports`
+  entry, and the `test:watch`, `pack:check`, `release:verify`, `preversion`, and
+  `prepublishOnly` scripts.
+- **The npm package is published as `pi-agy-cli`**, because the bare name
+  `pi-agy` is already taken on npm by an unrelated project. The project,
+  repository, and tool names are unchanged; install with
+  `pi install npm:pi-agy-cli`.
+
 - **Live TUI upgrade — animated, information-dense cards and fleet surfaces.**
   Every surface now mirrors pi-subagents' live TUI quality:
   - Animated 10-frame braille spinner, liveness/staleness labels (`active 3s ago`,

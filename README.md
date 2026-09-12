@@ -1,5 +1,11 @@
 # pi-agy
 
+[![CI](https://github.com/d1pankarmedhi/pi-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/d1pankarmedhi/pi-agy/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/pi-agy-cli.svg)](https://www.npmjs.com/package/pi-agy-cli)
+[![npm downloads](https://img.shields.io/npm/dm/pi-agy-cli.svg)](https://www.npmjs.com/package/pi-agy-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.18-blue.svg)](package.json)
+
 Delegate low-level tasks — writing code, exploring a codebase, research passes,
 inspecting screenshots and images — to Google Antigravity's
 [agy CLI](https://antigravity.google/docs/cli/headless/) running a Gemini agent.
@@ -33,25 +39,31 @@ leaves **zero residue**.
 ## Install
 
 ```bash
-# from GitHub (requires you to have pushed the repo — see Development below)
-pi install git:github.com/d1pankarmedhi/pi-agy
+# from npm (recommended; pin a version for reproducibility)
+pi install npm:pi-agy-cli
+pi install npm:pi-agy-cli@0.2.1
 
-# from npm once published
-pi install npm:pi-agy
+# from GitHub at a release tag
+pi install git:github.com/d1pankarmedhi/pi-agy@v0.2.1
 
-# from a local checkout
-pi install E:/dev/pi-agy
+# from a local checkout (development)
+pi install /absolute/path/to/pi-agy
 ```
 
 Uninstall:
 
 ```bash
-pi list       # shows the installed source string, e.g. git:github.com/d1pankarmedhi/pi-agy
+pi list       # shows the installed source string, e.g. npm:pi-agy-cli
 pi remove <source>
 ```
 
 No residue: `pi remove` deletes the package install; pi-agy itself never
 creates files anywhere.
+
+> **Note on the npm name.** The package is published as **`pi-agy-cli`**
+> because the bare name `pi-agy` is already taken on npm by an unrelated
+> project. The project, GitHub repository, and tool names remain `pi-agy` /
+> `agy`.
 
 ## Tools
 
@@ -549,31 +561,51 @@ src/executors.ts shared tool execution (single-run + fleet)
 src/tools.ts     tool definitions/schemas + TUI renderers
 ```
 
+Requires **Node.js >= 22.18** (tests run `.ts` files with Node's built-in type
+stripping).
+
 ```bash
 npm install          # installs dev tools + peer packages
 npm run typecheck    # tsc --noEmit
-npm test             # node --test
+npm test             # node --test tests/*.test.ts
+npm run test:watch   # re-run on change
+npm run pack:check   # inspect the exact npm tarball
+npm run release:verify   # typecheck + tests + pack check
 ```
 
-To publish on GitHub:
+Load the working copy into pi for manual testing:
 
 ```bash
-git init && git add -A && git commit -m "Initial release: pi-agy"
-git remote add origin https://github.com/d1pankarmedhi/pi-agy.git
-git push -u origin main
-# then install the released tag with:
-pi install git:github.com/d1pankarmedhi/pi-agy
+pi -e /absolute/path/to/pi-agy
 ```
 
-For npm publishing: `npm publish` (requires the `pi-package` keyword and `.npmrc`
-auth). If the name `pi-agy` is taken on npm, rename in `package.json` and update
-the `repository`/`homepage` URLs accordingly.
+### Branching, CI, and releases
+
+- `main` is production and always releasable. `develop` is the integration
+  branch and the default target for pull requests; feature and fix branches are
+  cut from `develop`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- Every push and pull request runs the
+  [`CI` workflow](.github/workflows/ci.yml) — typecheck plus tests on Node 22,
+  24, and 26, a publishable-tarball check, and an advisory dependency audit —
+  along with [`CodeQL`](.github/workflows/codeql.yml).
+- Releases are cut from `main` by pushing an annotated `vX.Y.Z` tag. The
+  [`Release` workflow](.github/workflows/release.yml) verifies the tag matches
+  `package.json`, publishes to npm with provenance, and opens a GitHub Release.
+  The full runbook — including npm Trusted Publishing (OIDC) setup and the
+  `NPM_TOKEN` fallback — is in [RELEASING.md](RELEASING.md).
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the
+branch model, commit conventions, and pull-request checklist. By participating
+you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
 
 The agy agent runs with your credentials and (when `allowCommands` is on) full
 shell access through `--dangerously-skip-permissions`. Treat prompts you send
-it as trusted input — see [SECURITY.md](SECURITY.md).
+it as trusted input — see [SECURITY.md](SECURITY.md) to report a vulnerability
+privately.
 
 ## License
 

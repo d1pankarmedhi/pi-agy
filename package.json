@@ -1,12 +1,23 @@
 {
-  "name": "pi-agy",
+  "name": "pi-agy-cli",
   "version": "0.2.1",
   "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Live status shows what the agent is doing (file edited, command run) and agy_fleet fans out multiple agents in parallel. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
   "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tests/*.test.ts\"",
-    "audit:runtime": "npm audit --omit=dev --omit=peer"
+    "test:watch": "node --test --watch \"tests/*.test.ts\"",
+    "audit:runtime": "npm audit --omit=dev --omit=peer",
+    "pack:check": "npm pack --dry-run",
+    "release:verify": "npm run typecheck && npm test && npm run pack:check",
+    "preversion": "npm run release:verify",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "keywords": [
     "pi-package",
@@ -25,6 +36,9 @@
   ],
   "author": "d1pankarmedhi",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/d1pankarmedhi/pi-agy.git"

@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in pi-agy is not working as documented
+title: '[Bug]: '
+labels:
+  - bug
+  - needs triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search [existing issues](https://github.com/d1pankarmedhi/pi-agy/issues) first.
+        For security problems, **do not** open a public issue — see [SECURITY.md](https://github.com/d1pankarmedhi/pi-agy/blob/main/SECURITY.md).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am on the latest release (`pi update --extensions`).
+          required: true
+        - label: This is not a security issue.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `pi ...`
+        2. Ask pi to ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: /agy-doctor output
+      description: Run `/agy-doctor` inside pi and paste the full report.
+      render: text
+  - type: input
+    id: pi-version
+    attributes:
+      label: pi version
+      placeholder: e.g. 0.80.1
+    validations:
+      required: true
+  - type: input
+    id: agy-version
+    attributes:
+      label: agy CLI version
+      description: Output of `agy --version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11, macOS 15, Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any warnings or run-log output. Redact secrets and personal paths.
+      render: text

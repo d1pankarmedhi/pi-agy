@@ -25,6 +25,9 @@ lerna-debug.log*
 coverage/
 .nyc_output/
 
+# npm pack artifacts
+*.tgz
+
 # agy / local agent state
 .agy/
 .agy-state/

@@ -28,8 +28,10 @@ access, so upgrade to the newest version:
 - **Credentials**: headless agy uses your cached Antigravity credentials.
   The extension does not read, store, or transmit them; it only forwards the
   prompt you provide.
-- **Zero footprint**: this extension writes nothing to disk. Uninstalling the
-  package (`pi remove`) leaves no residue.
+- **Zero footprint**: this extension creates no files of its own. The single
+exception is your own `~/.pi/agy.json`, written only when you run `/agy-model`
+or `/agy-effort` to save a model/effort choice. Uninstalling the package
+(`pi remove`) leaves no residue.
 - **Verified publishes**: npm releases are published from GitHub Actions with a
   signed [provenance attestation](https://docs.npmjs.com/generating-provenance-statements).
   You can verify a tarball's origin with `npm audit signatures`.

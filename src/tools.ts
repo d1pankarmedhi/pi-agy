@@ -48,7 +48,7 @@ export const agyRun = defineTool({
 		),
 		model: Type.Optional(
 			Type.String({
-				description: `Model slug, e.g. gemini-3.8-flash-high (default: ${config.model}). Run 'agy models' to list.`,
+				description: `Model slug, e.g. gemini-3.8-flash-high (defaults to pi-agy's configured model; run 'agy models' to list).`,
 			})
 		),
 		effort: Type.Optional(
@@ -111,7 +111,7 @@ export const agyCode = defineTool({
 				"The implementation task. Be concrete: what to create/modify, file names, and expected behavior.",
 		}),
 		workspace: Type.Optional(Type.String({ description: "Directory to work in (defaults to cwd)." })),
-		model: Type.Optional(Type.String({ description: `Model slug (default: ${config.model}).` })),
+		model: Type.Optional(Type.String({ description: `Model slug (defaults to pi-agy's configured model).` })),
 		effort: Type.Optional(
 			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
 		),
@@ -177,7 +177,7 @@ export const agyVision = defineTool({
 		workspace: Type.Optional(Type.String({ description: "Directory to run in (defaults to cwd)." })),
 		model: Type.Optional(
 			Type.String({
-				description: `Model slug — use a gemini-* slug for vision (default: ${config.model}).`,
+				description: `Model slug — use a gemini-* slug for vision (defaults to pi-agy's configured model).`,
 			})
 		),
 		effort: Type.Optional(
@@ -326,7 +326,7 @@ const fleetTaskSchema = Type.Object({
 	workspace: Type.Optional(
 		Type.String({ description: "Directory to run this lane in (defaults to cwd)." })
 	),
-	model: Type.Optional(Type.String({ description: `Model slug (default: ${config.model}).` })),
+	model: Type.Optional(Type.String({ description: `Model slug (defaults to pi-agy's configured model).` })),
 	effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
 	agent: Type.Optional(Type.String({ description: "agy agent to use for this lane." })),
 	allowCommands: Type.Optional(
@@ -369,7 +369,7 @@ export const agyFleet = defineTool({
 				description: `Max parallel agy agents (default: ${config.fleetConcurrency}, range 1–${MAX_FLEET_CONCURRENCY}).`,
 			})
 		),
-		model: Type.Optional(Type.String({ description: `Default model for all lanes (default: ${config.model}).` })),
+		model: Type.Optional(Type.String({ description: `Default model for all lanes (defaults to pi-agy's configured model).` })),
 		effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
 		agent: Type.Optional(Type.String({ description: "Default agy agent for all lanes." })),
 		allowCommands: Type.Optional(

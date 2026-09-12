@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import extension, { matchEffort } from "../index.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import extension, { config, effortFromModel, matchEffort } from "../index.ts";
 
 test("matchEffort rewrites gemini slugs to the requested effort", () => {
 	assert.equal(matchEffort("gemini-3.8-flash-medium", "high"), "gemini-3.8-flash-high");
@@ -21,6 +24,12 @@ test("matchEffort with no effort returns the model unchanged", () => {
 	assert.equal(matchEffort("gemini-3.8-flash-medium", undefined), "gemini-3.8-flash-medium");
 });
 
+test("matchEffort handles multi-segment gemini slugs", () => {
+	assert.equal(matchEffort("gemini-2.5-pro-preview-low", "high"), "gemini-2.5-pro-preview-high");
+	assert.equal(effortFromModel("gemini-2.5-pro-preview-low"), "low");
+	assert.equal(effortFromModel("gemini-3.8-flash"), undefined);
+});
+
 // ---------------------------------------------------------------------------
 // Extension wiring
 // ---------------------------------------------------------------------------
@@ -34,17 +43,20 @@ interface StubTool {
 
 type StubHandler = (...args: any[]) => any;
 
-function registerWithStub() {
+function registerWithStub(flagValues: Record<string, string> = {}) {
 	const tools = new Map<string, StubTool>();
 	const handlers = new Map<string, StubHandler>();
 	const commands = new Map<string, unknown>();
+	const flags = new Map<string, unknown>();
 	const api = {
 		registerTool: (tool: StubTool) => tools.set(tool.name, tool),
 		on: (event: string, handler: StubHandler) => handlers.set(event, handler),
 		registerCommand: (name: string, definition: unknown) => commands.set(name, definition),
+		registerFlag: (name: string, definition: unknown) => flags.set(name, definition),
+		getFlag: (name: string) => flagValues[name],
 	};
 	extension(api as never);
-	return { tools, handlers, commands };
+	return { tools, handlers, commands, flags };
 }
 
 test("the extension registers all five agy tools with custom TUI cards", () => {
@@ -114,6 +126,269 @@ test("session_start binds the fleet view and session_shutdown disposes it", asyn
 	await start!({ type: "session_start", reason: "startup" }, { hasUI: false });
 	await shutdown!({ type: "session_shutdown", reason: "quit" });
 });
+// ---------------------------------------------------------------------------
+// Terminal settings (/agy-model, /agy-effort)
+// ---------------------------------------------------------------------------
+
+interface StubUi {
+	notices: { message: string; type?: string }[];
+	ctx: { hasUI: boolean; cwd: string; ui: Record<string, unknown> };
+}
+
+function settingsContext(
+	hasUI = true,
+	select?: (title: string, options: string[]) => Promise<string | undefined>
+): StubUi {
+	const notices: { message: string; type?: string }[] = [];
+	return {
+		notices,
+		ctx: {
+			hasUI,
+			cwd: process.cwd(),
+			ui: {
+				notify: (message: string, type?: string) => notices.push({ message, type }),
+				select: select ?? (async () => undefined),
+				input: async () => undefined,
+			},
+		},
+	};
+}
+
+type SettingsCommand = {
+	handler: (args: string, ctx: unknown) => Promise<void>;
+	getArgumentCompletions?: (prefix: string) => Promise<{ value: string }[] | null> | { value: string }[] | null;
+};
+
+function settingsCommand(name: string): SettingsCommand {
+	const { commands } = registerWithStub();
+	const entry = commands.get(name) as SettingsCommand | undefined;
+	assert.ok(entry, `${name} command was not registered`);
+	return entry!;
+}
+
+test("the extension registers /agy-model and /agy-effort with argument completions", () => {
+	const { commands } = registerWithStub();
+	for (const name of ["agy-model", "agy-effort"]) {
+		const entry = commands.get(name) as { handler?: unknown; getArgumentCompletions?: unknown } | undefined;
+		assert.ok(entry, `${name} command was not registered`);
+		assert.equal(typeof entry!.handler, "function");
+		assert.equal(typeof entry!.getArgumentCompletions, "function");
+	}
+});
+
+test("/agy-effort completes low/medium/high", async () => {
+	const completions = settingsCommand("agy-effort").getArgumentCompletions!;
+	assert.deepEqual((await completions(""))?.map((item) => item.value), ["low", "medium", "high"]);
+	assert.deepEqual((await completions("m"))?.map((item) => item.value), ["medium"]);
+	assert.equal(await completions("z"), null);
+});
+
+test("/agy-effort applies to the session and keeps a gemini slug in sync", async () => {
+	const before = { model: config.model, effort: config.effort };
+	const { notices, ctx } = settingsContext();
+	try {
+		config.model = "gemini-3.8-flash-high";
+		config.effort = "high";
+		await settingsCommand("agy-effort").handler("low --session", ctx);
+		assert.equal(config.effort, "low");
+		assert.equal(config.model, "gemini-3.8-flash-low");
+		assert.match(notices.at(-1)!.message, /agy effort → low/);
+		assert.match(notices.at(-1)!.message, /session only/);
+	} finally {
+		config.model = before.model;
+		config.effort = before.effort;
+	}
+});
+
+test("/agy-model follows the effort a gemini slug encodes", async () => {
+	const before = { model: config.model, effort: config.effort };
+	const { notices, ctx } = settingsContext();
+	try {
+		config.model = "gemini-3.8-flash-high";
+		config.effort = "high";
+		await settingsCommand("agy-model").handler("gemini-3.1-pro-low --session", ctx);
+		assert.equal(config.model, "gemini-3.1-pro-low");
+		assert.equal(config.effort, "low");
+		assert.match(notices.at(-1)!.message, /agy model → gemini-3.1-pro-low \(effort low\)/);
+	} finally {
+		config.model = before.model;
+		config.effort = before.effort;
+	}
+});
+
+test("/agy-effort rejects an unknown level without touching the config", async () => {
+	const before = config.effort;
+	const { notices, ctx } = settingsContext();
+	await settingsCommand("agy-effort").handler("extreme --session", ctx);
+	assert.equal(config.effort, before);
+	assert.equal(notices.at(-1)!.type, "error");
+	assert.match(notices.at(-1)!.message, /Unknown effort "extreme"/);
+});
+
+test("/agy-model rejects extra arguments and prints usage on --help", async () => {
+	const { notices, ctx } = settingsContext();
+	const handler = settingsCommand("agy-model").handler;
+	await handler("--session a b", ctx);
+	assert.equal(notices.at(-1)!.type, "error");
+	assert.match(notices.at(-1)!.message, /Unexpected extra arguments: b/);
+	await handler("--help", ctx);
+	assert.match(notices.at(-1)!.message, /Usage: \/agy-model/);
+});
+
+test("/agy-model persists model + effort and preserves unrelated config keys", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-agy-index-"));
+	const file = join(dir, "agy.json");
+	writeFileSync(file, JSON.stringify({ timeout: "20m", roles: { scout: { effort: "low" } } }));
+	const before = { model: config.model, effort: config.effort, configFile: config.configFile };
+	const { notices, ctx } = settingsContext();
+	try {
+		config.configFile = file;
+		await settingsCommand("agy-model").handler("gemini-3.1-pro-high", ctx);
+		assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), {
+			timeout: "20m",
+			roles: { scout: { effort: "low" } },
+			model: "gemini-3.1-pro-high",
+			effort: "high",
+		});
+		assert.deepEqual({ model: config.model, effort: config.effort }, { model: "gemini-3.1-pro-high", effort: "high" });
+		assert.match(notices.at(-1)!.message, /saved to /);
+	} finally {
+		config.model = before.model;
+		config.effort = before.effort;
+		config.configFile = before.configFile;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("in non-UI mode a bare /agy-model prints usage instead of opening a picker", async () => {
+	const before = { model: config.model, effort: config.effort };
+	const logs: string[] = [];
+	const original = console.log;
+	console.log = (message?: unknown) => {
+		logs.push(String(message));
+	};
+	try {
+		await settingsCommand("agy-model").handler("", { hasUI: false, cwd: process.cwd(), ui: {} });
+		assert.match(logs.at(-1)!, /Usage: \/agy-model/);
+		assert.deepEqual({ model: config.model, effort: config.effort }, before);
+	} finally {
+		console.log = original;
+	}
+});
+
+test("--agy-model / --agy-effort set the session defaults at startup", () => {
+	const before = { model: config.model, effort: config.effort };
+	try {
+		const { flags } = registerWithStub({ "agy-model": "gemini-3.1-pro-low", "agy-effort": "medium" });
+		assert.ok(flags.has("agy-model"));
+		assert.ok(flags.has("agy-effort"));
+		assert.equal(config.effort, "medium");
+		assert.equal(config.model, "gemini-3.1-pro-medium");
+	} finally {
+		config.model = before.model;
+		config.effort = before.effort;
+	}
+});
+
+test("an invalid --agy-effort is ignored with a warning", () => {
+	const before = config.effort;
+	const warnings: string[] = [];
+	const original = console.warn;
+	console.warn = (message?: unknown) => {
+		warnings.push(String(message));
+	};
+	try {
+		registerWithStub({ "agy-effort": "extreme" });
+		assert.equal(config.effort, before);
+		assert.match(warnings.join("\n"), /ignoring --agy-effort=extreme/);
+	} finally {
+		console.warn = original;
+	}
+});
+
+test("/agy-effort with no value leaves the config alone when the picker is cancelled", async () => {
+	const before = { model: config.model, effort: config.effort };
+	const { ctx } = settingsContext(true, async () => undefined);
+	await settingsCommand("agy-effort").handler("", ctx);
+	assert.deepEqual({ model: config.model, effort: config.effort }, before);
+});
+
+test("--session never claims an env override", async () => {
+	const before = { model: config.model, effort: config.effort };
+	const previous = process.env.AGY_EFFORT;
+	const { notices, ctx } = settingsContext();
+	try {
+		process.env.AGY_EFFORT = "low";
+		await settingsCommand("agy-effort").handler("high --session", ctx);
+		assert.match(notices.at(-1)!.message, /session only/);
+		assert.doesNotMatch(notices.at(-1)!.message, /overrides the saved value/);
+	} finally {
+		if (previous === undefined) delete process.env.AGY_EFFORT;
+		else process.env.AGY_EFFORT = previous;
+		config.model = before.model;
+		config.effort = before.effort;
+	}
+});
+
+test("a saved change warns only about the env variable that actually overrides it", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-agy-index-"));
+	const file = join(dir, "agy.json");
+	const before = { model: config.model, effort: config.effort, configFile: config.configFile };
+	const previousModel = process.env.AGY_MODEL;
+	const previousEffort = process.env.AGY_EFFORT;
+	try {
+		config.configFile = file;
+		process.env.AGY_MODEL = "gemini-3.1-pro-high";
+		delete process.env.AGY_EFFORT;
+
+		const irrelevant = settingsContext();
+		await settingsCommand("agy-effort").handler("medium", irrelevant.ctx);
+		assert.doesNotMatch(irrelevant.notices.at(-1)!.message, /overrides the saved value/);
+
+		process.env.AGY_EFFORT = "low";
+		const relevant = settingsContext();
+		await settingsCommand("agy-effort").handler("medium", relevant.ctx);
+		assert.match(relevant.notices.at(-1)!.message, /AGY_EFFORT is set and overrides the saved value/);
+		assert.equal(relevant.notices.at(-1)!.type, "warning");
+	} finally {
+		if (previousModel === undefined) delete process.env.AGY_MODEL;
+		else process.env.AGY_MODEL = previousModel;
+		if (previousEffort === undefined) delete process.env.AGY_EFFORT;
+		else process.env.AGY_EFFORT = previousEffort;
+		config.model = before.model;
+		config.effort = before.effort;
+		config.configFile = before.configFile;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a launch flag is reported as overriding the saved value on the next launch", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-agy-index-"));
+	const file = join(dir, "agy.json");
+	const before = { model: config.model, effort: config.effort, configFile: config.configFile };
+	const notices: { message: string; type?: string }[] = [];
+	const ctx = {
+		hasUI: true,
+		cwd: process.cwd(),
+		ui: {
+			notify: (message: string, type?: string) => notices.push({ message, type }),
+			select: async () => undefined,
+			input: async () => undefined,
+		},
+	};
+	try {
+		const { commands } = registerWithStub({ "agy-model": "gemini-3.1-pro-low" });
+		config.configFile = file;
+		await (commands.get("agy-model") as SettingsCommand).handler("gemini-3.1-pro-high", ctx);
+		assert.match(notices.at(-1)!.message, /--agy-model is set and will override the saved value on the next launch/);
+	} finally {
+		config.model = before.model;
+		config.effort = before.effort;
+		config.configFile = before.configFile;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 // ---------------------------------------------------------------------------
 // Public surface: the live-TUI primitives stay importable from the root
 // ---------------------------------------------------------------------------

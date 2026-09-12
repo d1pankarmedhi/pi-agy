@@ -14,10 +14,10 @@ All notable changes to this project are documented in this file.
   `RELEASING.md`. `package.json` gains `engines.node >= 22.18`, an `exports`
   entry, and the `test:watch`, `pack:check`, `release:verify`, `preversion`, and
   `prepublishOnly` scripts.
-- **The npm package is published as `pi-agy-cli`**, because the bare name
-  `pi-agy` is already taken on npm by an unrelated project. The project,
-  repository, and tool names are unchanged; install with
-  `pi install npm:pi-agy-cli`.
+- **The npm package is published as `@dmpunk/pi-agy`** under the `dmpunk` npm
+  scope, because the bare name `pi-agy` is already taken on npm by an unrelated
+  project. The project, repository, and tool names are unchanged; install with
+  `pi install npm:@dmpunk/pi-agy`.
 
 - **Live TUI upgrade — animated, information-dense cards and fleet surfaces.**
   Every surface now mirrors pi-subagents' live TUI quality:

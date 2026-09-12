@@ -4,10 +4,10 @@ This is the maintainer runbook for cutting a release. It follows the standard
 open-source flow: version and changelog on `develop`, merge to the production
 branch `main`, tag, then let CI publish.
 
-- **Package name on npm:** `pi-agy-cli`. The bare name `pi-agy` is already
-  taken by an unrelated project, so the repository/brand stays `pi-agy` while
-  the published artifact is `pi-agy-cli`. Users install it with
-  `pi install npm:pi-agy-cli`.
+- **Package name on npm:** `@dmpunk/pi-agy` (public, under the `dmpunk` npm
+  scope). The bare name `pi-agy` is already taken by an unrelated project, so
+  the repository/brand stays `pi-agy` while the published artifact is scoped to
+  the org. Users install it with `pi install npm:@dmpunk/pi-agy`.
 - **Versioning:** [Semantic Versioning](https://semver.org/).
 - **Changelog:** [Keep a Changelog](https://keepachangelog.com/), newest first.
 - **Tags:** annotated `vX.Y.Z` (e.g. `v0.3.0`), created on `main`.
@@ -33,7 +33,12 @@ Do these once, before the first release.
 3. **Enable private vulnerability reporting and CodeQL** (Settings → Code
    security). The `CodeQL` workflow also runs on a schedule.
 
-4. **Choose npm authentication** (see the next section).
+4. **Own the npm scope.** The package publishes as `@dmpunk/pi-agy`, so an npm
+   organization named `dmpunk` must exist and your account must be a member with
+   publish rights. Scoped packages require public access, which
+   `publishConfig.access: public` already sets.
+
+5. **Choose npm authentication** (see the next section).
 
 ## npm authentication
 
@@ -47,7 +52,7 @@ The workflow already requests the `id-token: write` permission and calls
 
 To finish the setup:
 
-1. On [npmjs.com](https://www.npmjs.com/), open the `pi-agy-cli` package →
+1. On [npmjs.com](https://www.npmjs.com/), open the `@dmpunk/pi-agy` package →
    **Settings** → **Trusted Publisher** → **GitHub Actions**.
 2. Set:
    - **Organization or user:** `d1pankarmedhi`
@@ -65,7 +70,7 @@ To finish the setup:
 ### Option B — npm access token (bootstrap / fallback)
 
 1. Create a **Granular Access Token** on npm with *Read and write* permission
-   for the `pi-agy-cli` package (or a classic *Automation* token). Prefer
+   for the `@dmpunk/pi-agy` package (or a classic *Automation* token). Prefer
    limiting it to this package.
 2. Add it as a repository secret named **`NPM_TOKEN`**
    (Settings → Secrets and variables → Actions → New repository secret).
@@ -107,7 +112,7 @@ trusted publisher and delete the secret.
    ```bash
    git checkout main
    git pull
-   git tag -a v0.3.0 -m "pi-agy-cli 0.3.0"
+   git tag -a v0.3.0 -m "@dmpunk/pi-agy 0.3.0"
    git push origin v0.3.0
    ```
 
@@ -125,7 +130,7 @@ trusted publisher and delete the secret.
    git push origin develop
    ```
 
-9. **Verify** `pi install npm:pi-agy-cli@0.3.0` works and that the GitHub
+9. **Verify** `pi install npm:@dmpunk/pi-agy@0.3.0` works and that the GitHub
    Release lists the tag.
 
 ## Prereleases
@@ -136,7 +141,7 @@ never published to `latest`, and marks the GitHub Release as a prerelease.
 Testers install it explicitly:
 
 ```bash
-pi install npm:pi-agy-cli@0.3.0-beta.1
+pi install npm:@dmpunk/pi-agy@0.3.0-beta.1
 ```
 
 ## Hotfixes

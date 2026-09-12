@@ -1,8 +1,8 @@
 # pi-agy
 
 [![CI](https://github.com/d1pankarmedhi/pi-agy/actions/workflows/ci.yml/badge.svg)](https://github.com/d1pankarmedhi/pi-agy/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/pi-agy-cli.svg)](https://www.npmjs.com/package/pi-agy-cli)
-[![npm downloads](https://img.shields.io/npm/dm/pi-agy-cli.svg)](https://www.npmjs.com/package/pi-agy-cli)
+[![npm version](https://img.shields.io/npm/v/@dmpunk/pi-agy.svg)](https://www.npmjs.com/package/@dmpunk/pi-agy)
+[![npm downloads](https://img.shields.io/npm/dm/@dmpunk/pi-agy.svg)](https://www.npmjs.com/package/@dmpunk/pi-agy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.18-blue.svg)](package.json)
 
@@ -40,8 +40,8 @@ leaves **zero residue**.
 
 ```bash
 # from npm (recommended; pin a version for reproducibility)
-pi install npm:pi-agy-cli
-pi install npm:pi-agy-cli@0.2.1
+pi install npm:@dmpunk/pi-agy
+pi install npm:@dmpunk/pi-agy@0.2.1
 
 # from GitHub at a release tag
 pi install git:github.com/d1pankarmedhi/pi-agy@v0.2.1
@@ -53,17 +53,17 @@ pi install /absolute/path/to/pi-agy
 Uninstall:
 
 ```bash
-pi list       # shows the installed source string, e.g. npm:pi-agy-cli
+pi list       # shows the installed source string, e.g. npm:@dmpunk/pi-agy
 pi remove <source>
 ```
 
 No residue: `pi remove` deletes the package install; pi-agy itself never
 creates files anywhere.
 
-> **Note on the npm name.** The package is published as **`pi-agy-cli`**
-> because the bare name `pi-agy` is already taken on npm by an unrelated
-> project. The project, GitHub repository, and tool names remain `pi-agy` /
-> `agy`.
+> **Note on the npm name.** The package is published under the **`@dmpunk`**
+> scope as **`@dmpunk/pi-agy`**, because the bare name `pi-agy` is already taken
+> on npm by an unrelated project. The project, GitHub repository, and tool names
+> remain `pi-agy` / `agy`.
 
 ## Tools
 

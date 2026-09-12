@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { effortFromModel, isEffort, matchEffort, type AgyEffort } from "./model.ts";
 import { resolveRoles, type AgyRole, type AgyRoleOverride } from "./roles.ts";
 
 /**
@@ -48,6 +49,47 @@ function userConfigPath(): string {
 	return env ? resolve(env) : join(homedir(), ".pi", "agy.json");
 }
 
+/** Per-field inputs for `resolveModelEffort` (separated so it is unit-testable). */
+export interface ModelEffortInput {
+	envModel?: string;
+	envEffort?: string;
+	fileModel?: string;
+	fileEffort?: string;
+	defaultModel: string;
+	defaultEffort: AgyEffort;
+}
+
+export interface ModelEffortResolution {
+	model: string;
+	effort: AgyEffort;
+}
+
+/**
+ * Resolve the model + effort across precedence levels.
+ *
+ * The two fields rank independently (env > user file > defaults), but they must
+ * stay consistent: a gemini slug encodes its own effort. An *explicit* effort
+ * wins only when it comes from the same or a higher level than the winning
+ * model; otherwise the effort encoded in that slug wins. Without this,
+ * `AGY_MODEL=gemini-3.8-flash-low` would be silently rewritten by the default
+ * `effort=high`, and a file-level `effort` could override an env-level model.
+ */
+export function resolveModelEffort(input: ModelEffortInput): ModelEffortResolution {
+	const envModel = input.envModel?.trim() || undefined;
+	const fileModel = input.fileModel?.trim() || undefined;
+	const envEffort = isEffort(input.envEffort) ? input.envEffort : undefined;
+	const fileEffort = isEffort(input.fileEffort) ? input.fileEffort : undefined;
+
+	const model = envModel ?? fileModel ?? input.defaultModel;
+	const modelLevel = envModel ? 2 : fileModel ? 1 : 0;
+	const explicit = envEffort ? { level: 2, value: envEffort } : fileEffort ? { level: 1, value: fileEffort } : undefined;
+	const effort =
+		explicit && explicit.level >= modelLevel
+			? explicit.value
+			: effortFromModel(model) ?? explicit?.value ?? input.defaultEffort;
+	return { model: matchEffort(model, effort), effort };
+}
+
 function loadConfig(): AgyConfig {
 	const filePath = userConfigPath();
 	let file: Partial<AgyConfig> = {};
@@ -62,10 +104,18 @@ function loadConfig(): AgyConfig {
 		const n = parseInt(v ?? "", 10);
 		return Number.isFinite(n) && n > 0 ? n : dflt;
 	};
+	const { model, effort } = resolveModelEffort({
+		envModel: process.env.AGY_MODEL,
+		envEffort: process.env.AGY_EFFORT,
+		fileModel: file.model,
+		fileEffort: file.effort,
+		defaultModel: DEFAULT_CONFIG.model,
+		defaultEffort: DEFAULT_CONFIG.effort,
+	});
 	return {
 		bin: process.env.AGY_BIN || file.bin || DEFAULT_CONFIG.bin,
-		model: process.env.AGY_MODEL || file.model || DEFAULT_CONFIG.model,
-		effort: ((process.env.AGY_EFFORT || file.effort || DEFAULT_CONFIG.effort) as AgyConfig["effort"]),
+		model,
+		effort,
 		agent: process.env.AGY_AGENT || file.agent,
 		timeout: process.env.AGY_TIMEOUT || file.timeout || DEFAULT_CONFIG.timeout,
 		defaultAllowCommands: envBool(process.env.AGY_ALLOW_CMDS, file.defaultAllowCommands ?? DEFAULT_CONFIG.defaultAllowCommands),

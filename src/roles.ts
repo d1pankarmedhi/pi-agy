@@ -16,7 +16,9 @@
  * agents. Users can add or override roles in `~/.pi/agy.json` under `roles`.
  */
 
-export type AgyEffort = "low" | "medium" | "high";
+import { isEffort, type AgyEffort } from "./model.ts";
+
+export type { AgyEffort };
 
 /** A named specialist: prompt shape + enforced access policy. */
 export interface AgyRole {
@@ -164,10 +166,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		].join("\n"),
 	},
 ];
-
-function isEffort(value: unknown): value is AgyEffort {
-	return value === "low" || value === "medium" || value === "high";
-}
 
 /**
  * Merge built-in roles with user overrides from config.

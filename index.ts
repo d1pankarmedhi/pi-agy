@@ -34,9 +34,15 @@
  *   - Env vars:  AGY_BIN, AGY_MODEL, AGY_EFFORT, AGY_AGENT, AGY_TIMEOUT,
  *                AGY_ALLOW_CMDS, AGY_FLEET_CONCURRENCY, AGY_CONFIG
  *   - User file: ~/.pi/agy.json (path overridable via AGY_CONFIG)
- *   Order of precedence: built-in defaults < user file < env vars < tool params.
+ *   - Terminal:  /agy-model and /agy-effort pick the model + effort live and
+ *                save them to the user file; `pi --agy-model` / `pi
+ *                --agy-effort` set the session default at launch.
+ *   Order of precedence: built-in defaults < user file < env vars < CLI flags
+ *   < per-call tool params.
  *
- * The extension never writes to disk, so `pi remove` leaves no residue.
+ * The extension writes nothing of its own — only your own `~/.pi/agy.json`
+ * when you run `/agy-model` or `/agy-effort` — so `pi remove` leaves no
+ * residue.
  *
  * Headless-mode permissions:
  *   File reads/writes inside the workspace are auto-allowed by agy. Shell
@@ -48,8 +54,24 @@
  *   allowCommands.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { config, roles } from "./src/config.ts";
+import { EFFORT_LEVELS, isEffort, isGemini } from "./src/model.ts";
+import {
+	applyEffort,
+	applyModel,
+	envOverridesFor,
+	listModels,
+	parseSettingsArgs,
+	saveUserConfig,
+	settingsPatch,
+	type AppliedSettings,
+	type ModelEntry,
+} from "./src/settings.ts";
 import { doctorDeps, formatDoctorReport, runDoctor } from "./src/doctor.ts";
 import { AgyFleetView } from "./src/fleetview.ts";
 import { openFleetInspector } from "./src/inspector.ts";
@@ -72,7 +94,7 @@ export {
 export type { AgyRole, AgyRoleOverride, RoleResolution } from "./src/roles.ts";
 export { doctorDeps, formatDoctorReport, runDoctor } from "./src/doctor.ts";
 export type { DoctorCheck, DoctorReport, DoctorStatus } from "./src/doctor.ts";
-export { matchEffort } from "./src/model.ts";
+export { EFFORT_LEVELS, effortFromModel, isEffort, matchEffort } from "./src/model.ts";
 export {
 	ACTIVITY_LONG_RUNNING_MS,
 	ACTIVITY_NEEDS_ATTENTION_MS,
@@ -178,6 +200,26 @@ export {
 export type { VisionPromptInput } from "./src/vision.ts";
 export { extractOutputTail, runAgy, splitExistingFiles } from "./src/runner.ts";
 export type { RunOptions, StreamResult } from "./src/runner.ts";
+export {
+	applyEffort,
+	applyModel,
+	envOverrides,
+	envOverridesFor,
+	listModels,
+	MODEL_LIST_TIMEOUT_MS,
+	parseModelCatalogue,
+	parseSettingsArgs,
+	readUserConfig,
+	saveUserConfig,
+	settingsPatch,
+} from "./src/settings.ts";
+export type {
+	AppliedSettings,
+	ModelEntry,
+	ModelListExec,
+	SettingsArgs,
+	SettingsTarget,
+} from "./src/settings.ts";
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -189,6 +231,33 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyVision);
 	pi.registerTool(agyRole);
 	pi.registerTool(agyFleet);
+
+	// CLI flags set the session defaults at launch:
+	//   pi --agy-model gemini-3.1-pro-high --agy-effort high
+	pi.registerFlag("agy-model", {
+		description: "agy model slug for this pi session (overrides AGY_MODEL and ~/.pi/agy.json)",
+		type: "string",
+	});
+	pi.registerFlag("agy-effort", {
+		description: "agy reasoning effort for this pi session: low, medium, or high",
+		type: "string",
+	});
+
+	/** Flags outrank env vars and the config file, but not per-call tool params. */
+	function applyFlagOverrides(): string[] {
+		const notes: string[] = [];
+		const model = pi.getFlag("agy-model");
+		if (typeof model === "string" && model.trim()) applyModel(config, model);
+		const effort = pi.getFlag("agy-effort");
+		if (typeof effort === "string" && effort.trim()) {
+			const level = effort.trim();
+			if (isEffort(level)) applyEffort(config, level);
+			else notes.push(`ignoring --agy-effort=${effort}: expected low, medium, or high`);
+		}
+		return notes;
+	}
+
+	for (const note of applyFlagOverrides()) console.warn(`[pi-agy] ${note}`);
 
 	// The session fleet surface: a persistent widget under the editor while agy
 	// work runs, plus the /agy-fleet inspector it opens. Both read the same
@@ -265,6 +334,155 @@ export default function (pi: ExtensionAPI) {
 				`config=${config.configFile}\n\n${models}`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "info");
 			else console.log(msg);
+		},
+	});
+
+	// -----------------------------------------------------------------------
+	// Terminal settings: pick the model + effort agy runs with
+	// -----------------------------------------------------------------------
+
+	const settingsHelp: Record<"model" | "effort", string> = {
+		model: [
+			"Usage: /agy-model [slug] [--session]",
+			"",
+			"With no slug, picks from the models in `agy models`.",
+			`The choice applies to every later agy run and is saved to ${config.configFile}.`,
+			"Pass --session to change this session only.",
+		].join("\n"),
+		effort: [
+			"Usage: /agy-effort [low|medium|high] [--session]",
+			"",
+			"With no level, picks from low/medium/high.",
+			"Effort applies to gemini-* models only and keeps the model slug in sync.",
+			`The choice is saved to ${config.configFile}; pass --session to skip saving.`,
+		].join("\n"),
+	};
+
+	let modelCache: { at: number; entries: ModelEntry[] } | undefined;
+	const MODEL_CACHE_MS = 60_000;
+
+	async function cachedModels(): Promise<ModelEntry[]> {
+		if (modelCache && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.entries;
+		const entries = await listModels(config.bin);
+		modelCache = { at: Date.now(), entries };
+		return entries;
+	}
+
+	async function pickModel(ctx: ExtensionContext): Promise<string | undefined> {
+		ctx.ui.notify("Fetching agy models…", "info");
+		const entries = await cachedModels();
+		if (entries.length === 0) {
+			ctx.ui.notify(`Could not list models (\`${config.bin} models\` failed).`, "warning");
+			const typed = await ctx.ui.input(`agy model (current: ${config.model})`, "e.g. gemini-3.1-pro-high");
+			return typed?.trim() || undefined;
+		}
+		const choices: { value: string; label: string }[] = [];
+		const seen = new Set<string>();
+		const add = (slug: string, label?: string) => {
+			if (!slug || seen.has(slug)) return;
+			seen.add(slug);
+			choices.push({ value: slug, label: label ? `${slug}  —  ${label}` : slug });
+		};
+		if (!entries.some((entry) => entry.slug === config.model)) add(config.model, "current");
+		for (const entry of entries) add(entry.slug, entry.label === entry.slug ? undefined : entry.label);
+		const options = choices.map((choice) => (choice.value === config.model ? `● ${choice.label}` : `  ${choice.label}`));
+		const picked = await ctx.ui.select(`agy model (current: ${config.model})`, options);
+		const index = picked === undefined ? -1 : options.indexOf(picked);
+		return index >= 0 ? choices[index].value : undefined;
+	}
+
+	async function pickEffort(ctx: ExtensionContext): Promise<string | undefined> {
+		const options = EFFORT_LEVELS.map((level) => (level === config.effort ? `● ${level} (current)` : `  ${level}`));
+		const picked = await ctx.ui.select(`agy effort (current: ${config.effort})`, options);
+		if (picked === undefined) return undefined;
+		return EFFORT_LEVELS.find((level) => picked.includes(level));
+	}
+
+	function notifySettings(ctx: ExtensionCommandContext, message: string, type: "info" | "warning" | "error" = "info") {
+		if (ctx.hasUI) ctx.ui.notify(message, type);
+		else console.log(message);
+	}
+
+	async function settingsCommand(kind: "model" | "effort", args: string, ctx: ExtensionCommandContext): Promise<void> {
+		const parsed = parseSettingsArgs(args);
+		if (parsed.help) return notifySettings(ctx, settingsHelp[kind]);
+		if (parsed.extra.length) {
+			return notifySettings(ctx, `Unexpected extra arguments: ${parsed.extra.join(" ")}\n\n${settingsHelp[kind]}`, "error");
+		}
+
+		let value = parsed.value;
+		if (!value) {
+			if (!ctx.hasUI) return notifySettings(ctx, settingsHelp[kind], "error");
+			value = kind === "model" ? await pickModel(ctx) : await pickEffort(ctx);
+			if (!value) return; // cancelled
+		}
+
+		let applied: AppliedSettings;
+		if (kind === "model") applied = applyModel(config, value);
+		else if (isEffort(value)) applied = applyEffort(config, value);
+		else return notifySettings(ctx, `Unknown effort "${value}". Use low, medium, or high.`, "error");
+
+		const notes: string[] = [];
+		let saved = false;
+		let saveFailed = false;
+		if (parsed.session) {
+			notes.push("this session only (--session)");
+		} else {
+			try {
+				saveUserConfig(config.configFile, settingsPatch(applied));
+				saved = true;
+				notes.push(`saved to ${config.configFile}`);
+			} catch (e) {
+				saveFailed = true;
+				notes.push(`could not save ${config.configFile}: ${(e as Error).message} — applied for this session`);
+			}
+		}
+		// Override notices only matter when something was actually saved; a
+		// `--session` change is not overridden by env vars or launch flags.
+		const overriding = saved ? envOverridesFor(kind) : [];
+		for (const name of overriding) notes.push(`${name} is set and overrides the saved value`);
+		const flag = pi.getFlag(`agy-${kind}`);
+		if (saved && typeof flag === "string" && flag.trim()) {
+			notes.push(`--agy-${kind} is set and will override the saved value on the next launch`);
+		}
+
+		const headline = kind === "model" ? `agy model → ${applied.model}` : `agy effort → ${applied.effort}`;
+		const detail = kind === "model" && isGemini(applied.model) ? ` (effort ${applied.effort})` : "";
+		notifySettings(
+			ctx,
+			[headline + detail, ...notes, "applies to the next agy run"].join("\n"),
+			saveFailed || overriding.length ? "warning" : "info"
+		);
+	}
+
+	pi.registerCommand("agy-model", {
+		description: "Choose the agy model (picker, or /agy-model <slug>) — saved to your config",
+		getArgumentCompletions: async (prefix: string) => {
+			const entries = await cachedModels();
+			const items = entries
+				.map((entry) => ({
+					value: entry.slug,
+					label: entry.slug,
+					description: entry.label === entry.slug ? undefined : entry.label,
+				}))
+				.filter((item) => item.value.startsWith(prefix));
+			return items.length ? items : null;
+		},
+		handler: async (args, ctx) => {
+			await settingsCommand("model", args, ctx);
+		},
+	});
+
+	pi.registerCommand("agy-effort", {
+		description: "Choose the agy reasoning effort (low/medium/high) — saved to your config",
+		getArgumentCompletions: (prefix: string) => {
+			const items = EFFORT_LEVELS.map((level) => ({ value: level, label: level })).filter((item) =>
+				item.value.startsWith(prefix)
+			);
+			return items.length ? items : null;
+		},
+		handler: async (args, ctx) => {
+			await settingsCommand("effort", args, ctx);
 		},
 	});
 

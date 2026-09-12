@@ -28,8 +28,9 @@ log** of every tool step. `agy_fleet` fans out multiple agy agents on a list of
 tasks with bounded concurrency and a live per-lane board.
 
 Install / uninstall through pi like any other package (`pi-web-access`,
-`pi-mcp-adapter`, …). The extension never writes to disk, so uninstalling
-leaves **zero residue**.
+`pi-mcp-adapter`, …). pi-agy creates no files of its own — the only thing it
+writes is your own `~/.pi/agy.json`, when you run `/agy-model` or `/agy-effort`
+— so uninstalling leaves **zero residue**.
 
 ## Requirements
 
@@ -41,10 +42,10 @@ leaves **zero residue**.
 ```bash
 # from npm (recommended; pin a version for reproducibility)
 pi install npm:@dmpunk/pi-agy
-pi install npm:@dmpunk/pi-agy@0.3.1
+pi install npm:@dmpunk/pi-agy@0.4.0
 
 # from GitHub at a release tag
-pi install git:github.com/d1pankarmedhi/pi-agy@v0.3.1
+pi install git:github.com/d1pankarmedhi/pi-agy@v0.4.0
 
 # from a local checkout (development)
 pi install /absolute/path/to/pi-agy
@@ -57,8 +58,9 @@ pi list       # shows the installed source string, e.g. npm:@dmpunk/pi-agy
 pi remove <source>
 ```
 
-No residue: `pi remove` deletes the package install; pi-agy itself never
-creates files anywhere.
+No residue: `pi remove` deletes the package install. pi-agy creates no files of
+its own; the only write is your own config file when you save a model/effort
+choice with `/agy-model` or `/agy-effort`.
 
 > **Note on the npm name.** The package is published under the **`@dmpunk`**
 > scope as **`@dmpunk/pi-agy`**, because the bare name `pi-agy` is already taken
@@ -370,8 +372,10 @@ avoid conflicting edits. Per-lane `model`, `effort`, `agent`, `allowCommands`,
 
 Sensible defaults are baked in: `gemini-3.8-flash-high`, `effort=high`,
 10m timeout, commands allowed, and opt-in delegation with verification guidance
-on. Override with environment variables (highest precedence) or an optional user
-config file.
+on. Override with the [terminal commands](#choose-model--effort-from-the-terminal)
+below, CLI flags (`pi --agy-model … --agy-effort …`), environment variables, or
+an optional user config file. Precedence: built-in defaults < user file < env
+vars < CLI flags < per-call tool params.
 
 | Env var             | Default                 | Meaning                                    |
 | ------------------- | ----------------------- | ------------------------------------------ |
@@ -402,7 +406,37 @@ tool params win over both):
 > `model` + `effort` must stay consistent: gemini slugs encode the effort
 > (`gemini-3.8-flash-high`), and agy rejects mismatches like
 > `gemini-3.8-flash-medium` + `--effort high`. The extension auto-fixes gemini
-> slugs to match the requested effort (see `matchEffort`).
+> slugs to match the requested effort (see `matchEffort`), and resolves the two
+> fields per precedence level — `AGY_MODEL=gemini-3.8-flash-low` with no
+> explicit effort keeps `low` instead of being rewritten by the default.
+
+### Choose model & effort from the terminal
+
+You do not have to hand-edit the file (or restart pi) to change either:
+
+| Command                     | What it does                                             |
+| --------------------------- | -------------------------------------------------------- |
+| `/agy-model`                | picker of the models from `agy models`, current one marked |
+| `/agy-model gemini-3.1-pro-high` | set the model directly                              |
+| `/agy-effort`               | picker: `low`, `medium`, `high`                          |
+| `/agy-effort low`           | set the effort directly                                  |
+
+The choice applies to **every later agy run in the session** and is saved to the
+user config file by default, so it survives a restart. Add `--session` to change
+the current session only; `/agy-model --help` prints usage. `Tab` completes
+slugs (`/agy-model`) and levels (`/agy-effort`).
+
+At launch, the same defaults can be set with CLI flags — they outrank env vars
+and the config file, while per-call tool params still win:
+
+```bash
+pi --agy-model gemini-3.1-pro-high --agy-effort high
+```
+
+> A gemini slug encodes its own effort (`gemini-3.8-flash-low`), so picking a
+> gemini model also sets the effort to the level in the slug. Non-gemini models
+> (`claude-*`, `gpt-oss-*`) ignore `--effort`. If `AGY_MODEL` / `AGY_EFFORT` is
+> exported, it overrides the saved value and the command tells you so.
 
 ## Images and screenshots (`agy_vision`)
 
@@ -531,6 +565,10 @@ conversation per workspace via `conversation_id`.
 ## Commands
 
 - `/agy <prompt>` — run a one-off prompt through the agent and print the result.
+- `/agy-model [slug]` — pick or set the agy model; saved to your config
+  (`--session` to skip saving).
+- `/agy-effort [low|medium|high]` — pick or set the reasoning effort; saved to
+  your config (`--session` to skip saving).
 - `/agy-models` — show active config and list available models.
 - `/agy-fleet` — open the live fleet inspector (active + recently finished runs).
 - `/agy-doctor` — check the setup: agy CLI + version, config file, workspace,

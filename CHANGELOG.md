@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
+### Added
+
+- **Choose the agy model and effort from the terminal.** `/agy-model [slug]
+  [--session]` and `/agy-effort [low|medium|high] [--session]` open a picker
+  (models come from `agy models`, with the current one marked) or accept an
+  explicit value, apply immediately to every later agy run, and save `model` +
+  `effort` to `~/.pi/agy.json` — pass `--session` to skip the save. `Tab`
+  completes model slugs and effort levels. A gemini slug sets the effort it
+  encodes (`gemini-3.8-flash-low` → `low`); non-gemini models leave effort
+  alone. New CLI flags `--agy-model <slug>` and `--agy-effort <level>` set the
+  session default at launch, above env vars and the config file. Saving the user
+  config file is the only disk write the extension performs.
+
+### Fixed
+
+- **Model/effort precedence no longer inverts.** The two fields are resolved per
+  precedence level: an explicit `effort` only wins when it comes from the same
+  or a higher level than the winning model, otherwise the effort encoded in the
+  gemini slug wins. Previously the default `effort=high` silently rewrote
+  `AGY_MODEL=gemini-3.8-flash-low`, and a file-level `effort` could override an
+  env-level `model`. `saveUserConfig` now writes through an existing symlink
+  (dotfile setups keep their link), the tool descriptions no longer bake in the
+  startup model, and the model/effort commands only report env or flag overrides
+  when they actually apply.
+
 ## [0.3.1] - 2026-09-12
 
 ### Changed

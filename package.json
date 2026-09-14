@@ -57,7 +57,7 @@
   ],
   "devDependencies": {
     "@earendil-works/pi-tui": "^0.85.1",
-    "@types/node": "^26.5.0",
+    "@types/node": "^26.5.1",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {

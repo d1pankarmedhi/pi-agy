@@ -4,7 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-### Changed
+## [0.5.1] - 2026-11-25
+
+### Fixed
 
 - **Every tool and role now defaults to `high` effort.** The built-in roles no
   longer pin their own effort (`scout` was `low`), so one setting controls all

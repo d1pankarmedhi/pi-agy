@@ -40,8 +40,8 @@ over. Otherwise pi does the work itself.
 
 ```bash
 pi install npm:@dmpunk/pi-agy            # latest from npm
-pi install npm:@dmpunk/pi-agy@0.5.0      # pinned, reproducible
-pi install git:github.com/d1pankarmedhi/pi-agy@v0.5.0   # from a release tag
+pi install npm:@dmpunk/pi-agy@0.5.1      # pinned, reproducible
+pi install git:github.com/d1pankarmedhi/pi-agy@v0.5.1   # from a release tag
 pi install /absolute/path/to/pi-agy      # local checkout (development)
 ```
 

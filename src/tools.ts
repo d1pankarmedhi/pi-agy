@@ -1,6 +1,17 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import {
+	clearAllReports,
+	displayPath,
+	formatBytes,
+	listAllReports,
+	parseAge,
+	reportRoots,
+	resolveFleetOutput,
+	resolveReportOutput,
+} from "./artifacts.ts";
 import { config, MAX_FLEET_CONCURRENCY, roles } from "./config.ts";
+import { agyFleetRegistry } from "./registry.ts";
 import { executeAgy, executeFleet, type FleetTaskParams } from "./executors.ts";
 import { resolveWorkspace } from "./paths.ts";
 import { fleetRenderers, singleRenderers } from "./render.ts";
@@ -87,6 +98,15 @@ export const agyRun = defineTool({
 				description: `Max wait for a response, e.g. "10m" (default: ${config.timeout}).`,
 			})
 		),
+		output: Type.Optional(
+			Type.Union([Type.String(), Type.Boolean()], {
+				description:
+					"Also write this run's report to disk. Omitted/false = no file, since the response already comes back in full. " +
+					`true = one report directory under the configured root (default: ${config.runOutput}); ` +
+					"a directory path, or a path ending in .md for a single document. The result names the path — use it " +
+					"to hand the full report to another agent or a third party.",
+			})
+		),
 	}),
 	execute: executeAgy,
 	...singleRenderers("run"),
@@ -126,6 +146,15 @@ export const agyCode = defineTool({
 			Type.Boolean({ description: "Continue the previous agy conversation for this workspace." })
 		),
 		timeout: Type.Optional(Type.String({ description: `Max wait (default: ${config.timeout}).` })),
+		output: Type.Optional(
+			Type.Union([Type.String(), Type.Boolean()], {
+				description:
+					"Also write this run's report to disk. Omitted/false = no file, since the response already comes back in full. " +
+					`true = one report directory under the configured root (default: ${config.runOutput}); ` +
+					"a directory path, or a path ending in .md for a single document. The result names the path — use it " +
+					"to hand the full report to another agent or a third party.",
+			})
+		),
 	}),
 	execute: (id, params, signal, onUpdate, ctx) =>
 		executeAgy(
@@ -197,6 +226,15 @@ export const agyVision = defineTool({
 			Type.String({ description: "JSON schema string to constrain the agent's structured output." })
 		),
 		timeout: Type.Optional(Type.String({ description: `Max wait (default: ${config.timeout}).` })),
+		output: Type.Optional(
+			Type.Union([Type.String(), Type.Boolean()], {
+				description:
+					"Also write this run's report to disk. Omitted/false = no file, since the response already comes back in full. " +
+					`true = one report directory under the configured root (default: ${config.runOutput}); ` +
+					"a directory path, or a path ending in .md for a single document. The result names the path — use it " +
+					"to hand the full report to another agent or a third party.",
+			})
+		),
 	}),
 	execute: (id, params, signal, onUpdate, ctx) => {
 		const allowCommands = resolveVisionAllowCommands(params.allowCommands, params.url);
@@ -236,6 +274,9 @@ export const agyVision = defineTool({
 				continueConv: params.continueConv,
 				jsonSchema: params.jsonSchema,
 				timeout: params.timeout,
+				output: params.output,
+				// The guided prompt is what agy sees; the report shows the user's question.
+				reportTask: params.prompt,
 				preset: "vision",
 			},
 			signal,
@@ -284,6 +325,15 @@ export const agyRole = defineTool({
 		conversation: Type.Optional(Type.String({ description: "Resume a specific conversation_id." })),
 		jsonSchema: Type.Optional(Type.String({ description: "JSON schema to constrain the role's final structured output." })),
 		timeout: Type.Optional(Type.String({ description: `Max wait (default: ${config.timeout}).` })),
+		output: Type.Optional(
+			Type.Union([Type.String(), Type.Boolean()], {
+				description:
+					"Also write this run's report to disk. Omitted/false = no file, since the response already comes back in full. " +
+					`true = one report directory under the configured root (default: ${config.runOutput}); ` +
+					"a directory path, or a path ending in .md for a single document. The result names the path — use it " +
+					"to hand the full report to another agent or a third party.",
+			})
+		),
 	}),
 	execute: (id, params, signal, onUpdate, ctx) => {
 		const role = findRole(roles, params.role);
@@ -309,6 +359,9 @@ export const agyRole = defineTool({
 				conversation: params.conversation,
 				jsonSchema: policy.jsonSchema,
 				timeout: params.timeout,
+				output: params.output,
+				// Persist the user's request, not the role-expanded prompt.
+				reportTask: params.prompt,
 				preset: "role",
 				role: role.id,
 			},
@@ -359,14 +412,28 @@ export const agyFleet = defineTool({
 		"verify each lane. Use to parallelize independent subtasks (edit several modules, run " +
 		"separate research passes, scaffold multiple components). All lanes sharing one " +
 		"workspace write to the same directory — prefer distinct workspaces (or distinct files) " +
-		"to avoid conflicting edits.",
+		"to avoid conflicting edits. " +
+		"The full lane reports are also written to disk (report.md + manifest.json + one file per lane) " +
+		"and the result names the path, so downstream agents can read the complete text instead of the " +
+		"truncated summary in this result. Old reports are pruned automatically; use agy_reports to list " +
+		"or clear them once consumed.",
 	parameters: Type.Object({
 		tasks: Type.Array(fleetTaskSchema, {
 			description: "One entry per agy lane (2–24). Each needs a self-contained `task` prompt.",
 		}),
-		concurrency: Type.Optional(
+		"concurrency": Type.Optional(
 			Type.Integer({
 				description: `Max parallel agy agents (default: ${config.fleetConcurrency}, range 1–${MAX_FLEET_CONCURRENCY}).`,
+			})
+		),
+		output: Type.Optional(
+			Type.Union([Type.String(), Type.Boolean()], {
+				description:
+					"Where to write the fleet report. true/omitted = the configured report root " +
+					`(default: ${config.fleetOutput}, one directory per fleet) — the standard way to hand full, ` +
+					"untruncated lane reports to another agent or a third party. A directory path writes " +
+					"report.md + manifest.json + lanes/<id>.md there; a path ending in .md writes a single " +
+					"combined document (plus a sibling .manifest.json). false disables writing.",
 			})
 		),
 		model: Type.Optional(Type.String({ description: `Default model for all lanes (defaults to pi-agy's configured model).` })),
@@ -382,3 +449,141 @@ export const agyFleet = defineTool({
 });
 
 export type { FleetTaskParams };
+// Report hygiene: inspect or clear the fleet reports written by agy_fleet.
+export const agyReports = defineTool({
+	name: "agy_reports",
+	label: "Agy Reports (on-disk artifacts)",
+	description:
+		"OPT-IN: call this only when the user explicitly asks to use agy / Antigravity for the current task. " +
+		"List or clear the reports the agy tools write to disk (fleet reports and any single run written with `output`). " +
+		"`action: \"list\"` shows every stored report: id, kind, age, lane counts, size — use it to find the " +
+		"report of a finished run so it can be handed to another agent, or to see how much space the reports use. " +
+		"`action: \"clear\"` deletes reports that have already been consumed; it requires a selector " +
+		"(`fleetId`, `keep`, `olderThan`, or `all: true`) so nothing disappears by accident, and it only ever " +
+		"touches report directories under the configured roots. Clearing is optional — reports are pruned " +
+		"automatically by count and age — so clear only when the user asks or when space matters.",
+	parameters: Type.Object({
+		action: Type.Optional(
+			Type.Union([Type.Literal("list"), Type.Literal("clear")], {
+				description: "`list` (default) or `clear`.",
+			})
+		),
+		path: Type.Optional(
+			Type.String({
+				description: `One report root to inspect instead of both (default: ${config.fleetOutput} + ${config.runOutput}).`,
+			})
+		),
+		fleetId: Type.Optional(
+			Type.String({ description: "Clear one report by id, as shown by `list` (fleet-… or run-…)." })
+		),
+		keep: Type.Optional(Type.Integer({ description: "Clear all but the newest N reports in each root." })),
+		olderThan: Type.Optional(
+			Type.String({ description: 'Clear reports finished longer ago than this, e.g. "7d", "36h".' })
+		),
+		all: Type.Optional(Type.Boolean({ description: "Clear every report under the report roots." })),
+		dryRun: Type.Optional(Type.Boolean({ description: "Report what would be removed without deleting anything." })),
+	}),
+	execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+		const explicit = params.path?.trim();
+		const roots = explicit ? explicitRoots(explicit, ctx.cwd) : reportRoots(ctx.cwd, config.fleetOutput, config.runOutput);
+		if (!roots.length) {
+			throw new Error(
+				"agy_reports: report output is disabled (fleetOutput and runOutput are off) — nothing is stored on disk."
+			);
+		}
+		const shownRoots = roots.map((root) => displayPath(root, ctx.cwd)).join(", ");
+		const action = params.action ?? "list";
+
+		if (action === "list") {
+			const reports = listAllReports(roots);
+			const total = reports.reduce((sum, entry) => sum + entry.bytes, 0);
+			const lines = reports.length
+				? [
+						`agy reports — ${shownRoots} · ${reports.length} report${reports.length === 1 ? "" : "s"} · ${formatBytes(total)}`,
+						"",
+						"| id | kind | created | lanes | ok | failed | size |",
+						"|---|---|---|---|---|---|---|",
+						...reports.map(
+							(entry) =>
+								`| ${entry.id} | ${entry.kind} | ${when(entry.createdAt)} | ` +
+								`${entry.lanes || "—"} | ${entry.lanes ? entry.done : "—"} | ` +
+								`${entry.lanes ? entry.failed + entry.aborted : "—"} | ${formatBytes(entry.bytes)} |`
+						),
+						"",
+						`Each report holds \`report.md\` and \`manifest.json\` (a fleet adds one file per lane). ` +
+							"Read the report.md for the full document.",
+					]
+				: [`No stored reports under ${shownRoots}.`];
+			return {
+				content: [{ type: "text", text: lines.join("\n") }],
+				details: { action, roots, reports, totalBytes: total },
+			};
+		}
+
+		// A run that is still going is mid-write: clearing its directory would leave
+		// half a report behind.
+		const active = agyFleetRegistry.active().length;
+		if (active && params.all) {
+			throw new Error(
+				`agy_reports: ${active} agy run${active === 1 ? " is" : "s are"} still active — clear by \`fleetId\` or ` +
+					"wait until they finish before clearing everything."
+			);
+		}
+
+		const olderThanDays = parseAge(params.olderThan);
+		if (params.olderThan && olderThanDays === undefined) {
+			throw new Error(`agy_reports: could not read olderThan "${params.olderThan}" — use e.g. "7d", "36h", "90m"`);
+		}
+		const result = clearAllReports(roots, {
+			ids: params.fleetId ? [params.fleetId] : undefined,
+			keep: params.keep,
+			olderThanDays,
+			all: params.all,
+			dryRun: params.dryRun,
+		});
+
+		const verb = result.dryRun ? "Would clear" : "Cleared";
+		const kept = result.kept.length ? ` · ${result.kept.length} kept` : "";
+		const lines =
+			result.removed.length === 0
+				? [`Nothing matched under ${shownRoots} — no report was removed.`]
+				: [
+						`${verb} ${result.removed.length} report${result.removed.length === 1 ? "" : "s"} ` +
+							`(${formatBytes(result.bytes)}) under ${shownRoots}${kept}.`,
+						"",
+						...result.removed.map((entry) => `- ${entry.id} (${entry.kind})`),
+					];
+		return {
+			content: [{ type: "text", text: lines.join("\n") }],
+			details: {
+				action,
+				roots,
+				dryRun: result.dryRun,
+				removed: result.removed.map((entry) => ({ id: entry.id, kind: entry.kind, bytes: entry.bytes, root: entry.root })),
+				kept: result.kept.map((entry) => entry.id),
+				freedBytes: result.bytes,
+			},
+		};
+	},
+});
+
+/** Local time, matching the timestamp in each directory name. */
+function when(iso?: string): string {
+	if (!iso) return "—";
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return "—";
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** `path` on agy_reports: one directory root, validated up front. */
+function explicitRoots(raw: string, cwd: string): string[] {
+	const target = resolveReportOutput(raw, cwd, raw, true);
+	if (target.mode === "off") {
+		throw new Error(`agy_reports: "${raw}" is not a report directory.`);
+	}
+	if (target.mode === "file") {
+		throw new Error(`agy_reports: "${raw}" is a single report file, not a directory — remove it with the normal file tools.`);
+	}
+	return [target.dir];
+}

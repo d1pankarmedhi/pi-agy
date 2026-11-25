@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { uniqueLaneIds } from "../src/fleet.ts";
 import {
 	activeFleetTotals,
 	fleetCollapsedLines,
@@ -325,4 +326,12 @@ test("formatFleetText renders a plain-text fallback for non-UI modes", () => {
 	assert.match(text, /\[done\] agy_code/);
 	assert.match(text, /files: src\/a\.ts/);
 	assert.match(text, /ran: npm test/);
+});
+
+test("uniqueLaneIds makes duplicate lane ids distinct", () => {
+	assert.deepEqual(uniqueLaneIds(["a", "a", "a"]), ["a", "a-2", "a-3"]);
+	assert.deepEqual(uniqueLaneIds(["t1", "t2"]), ["t1", "t2"]);
+	// A generated suffix can collide with a real id; the first one wins.
+	assert.deepEqual(uniqueLaneIds(["a", "a-2", "a"]), ["a", "a-2", "a-3"]);
+	assert.deepEqual(uniqueLaneIds(["  ", ""]), ["lane", "lane-2"]);
 });

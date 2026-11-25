@@ -3,8 +3,24 @@ import type {
 	AgentToolUpdateCallback,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { dirname, resolve } from "node:path";
 import { config, clampConcurrency, MAX_FLEET_TASKS, roles } from "./config.ts";
-import { formatFleetBoard, summarizeFleet, type FleetLaneState } from "./fleet.ts";
+import {
+	displayPath,
+	newFleetId,
+	newRunId,
+	resolveFleetOutput,
+	resolveRunOutput,
+	writeFleetArtifacts,
+	writeFleetReportFile,
+	writeRunReport,
+	type ArtifactLane,
+	type FleetArtifacts,
+	type FleetOutputTarget,
+	type FleetMeta,
+	type RunArtifacts,
+} from "./artifacts.ts";
+import { formatFleetBoard, summarizeFleet, uniqueLaneIds, type FleetLaneState } from "./fleet.ts";
 import { resolveWorkspace } from "./paths.ts";
 import type { AgyMeta, AgyPreset, SingleDetails } from "./render.ts";
 import { agyFleetRegistry } from "./registry.ts";
@@ -37,6 +53,10 @@ export interface AgyToolParams {
 	preset?: AgyPreset;
 	/** Specialist role id, when the run came from `agy_role` or a fleet lane. */
 	role?: string;
+	/** Write this run's report to disk (`true` = configured root, a path, `false` = off). */
+	output?: string | boolean;
+	/** The user's own request, when `prompt` was rewritten by a role or the vision guide. */
+	reportTask?: string;
 }
 
 /**
@@ -108,6 +128,7 @@ export async function executeAgy(
 		role: params.role,
 	};
 
+	const runStartedAt = Date.now();
 	let footer = "";
 	const pushFooter = debounce(() => {
 		if (ctx.hasUI && footer) ctx.ui.setStatus("agy", footer);
@@ -198,7 +219,42 @@ export async function executeAgy(
 		// Final one-shot status before the footer clears.
 		if (ctx.hasUI)
 			ctx.ui.setStatus("agy", `agy ✓ done in ${formatDuration(r.duration_seconds ? r.duration_seconds * 1000 : 0)}`);
-		return buildResult(r, { workspace, model: usedModel ?? model, allowCommands, steps: r.steps ?? [], meta, extraWarnings });
+		const built = buildResult(r, {
+			workspace,
+			model: usedModel ?? model,
+			allowCommands,
+			steps: r.steps ?? [],
+			meta,
+			extraWarnings,
+		});
+		// A single run's response already comes back whole, so its report is opt-in:
+		// the path is for handing the run to another agent or a third party.
+		const artifacts = writeRunArtifacts(r, {
+			params,
+			cwd: ctx.cwd,
+			workspace,
+			model: usedModel ?? model,
+			effort,
+			startedAt: runStartedAt,
+			preset,
+		});
+		if (artifacts) {
+			const block = built.content[0];
+			const warning = artifacts.warnings.length ? `\n\n⚠️ ${artifacts.warnings.join(" ")}` : "";
+			if (block && block.type === "text") {
+				block.text += `\n\nReport: \`${displayPath(artifacts.report, ctx.cwd)}\`${warning}`;
+			}
+			built.details.artifacts = {
+				runId: artifacts.runId,
+				dir: artifacts.dir,
+				report: artifacts.report || undefined,
+				manifest: artifacts.manifest || undefined,
+				bytes: artifacts.bytes,
+				pruned: artifacts.pruned.length ? artifacts.pruned : undefined,
+				warnings: artifacts.warnings.length ? artifacts.warnings : undefined,
+			};
+		}
+		return built;
 	} catch (e) {
 		agyFleetRegistry.finish(runId, {
 			status: signal?.aborted ? "aborted" : "failed",
@@ -210,6 +266,101 @@ export async function executeAgy(
 		pushFooter.cancel();
 		if (ctx.hasUI) ctx.ui.setStatus("agy", undefined);
 	}
+}
+
+/**
+ * Persist one run's report when the caller asked for it. Output failures are
+ * warnings, never errors: the run itself succeeded.
+ */
+function writeRunArtifacts(
+	r: StreamResult,
+	opts: {
+		params: AgyToolParams;
+		cwd: string;
+		workspace: string;
+		model: string;
+		effort: string;
+		startedAt: number;
+		preset: AgyPreset;
+	}
+): RunArtifacts | undefined {
+	const target = resolveRunOutput(opts.params.output, opts.cwd, config.runOutput);
+	if (target.mode === "off") return undefined;
+
+	const lane: ArtifactLane = {
+		id: runLabel(opts.preset, opts.params.role),
+		task: opts.params.reportTask ?? opts.params.prompt,
+		workspace: opts.workspace,
+		status: "done",
+		startedAt: opts.startedAt,
+		endedAt: Date.now(),
+		result: r,
+		role: opts.params.role,
+		model: opts.model,
+		effort: opts.effort,
+	};
+	const now = Date.now();
+	const runId = newRunId(now, opts.startedAt.toString(36).slice(-4));
+
+	try {
+		if (target.mode === "file") return writeSingleFile(target, lane, opts, runId, now);
+		return writeRunReport({
+			root: target.dir,
+			runId,
+			preset: runLabel(opts.preset, opts.params.role),
+			cwd: opts.cwd,
+			lane,
+			keep: config.reportKeep,
+			maxAgeDays: config.reportMaxAgeDays,
+			selfIgnore: target.dir === defaultRunDir(opts.cwd),
+			now,
+		});
+	} catch (e) {
+		return {
+			runId,
+			dir: target.mode === "file" ? target.file : target.dir,
+			report: "",
+			manifest: "",
+			bytes: 0,
+			pruned: [],
+			warnings: [`could not write the run report: ${(e as Error).message}`],
+		};
+	}
+}
+
+/** `output: "path.md"` — one self-contained document plus a sibling manifest. */
+function writeSingleFile(
+	target: Extract<FleetOutputTarget, { mode: "file" }>,
+	lane: ArtifactLane,
+	opts: { cwd: string; startedAt: number },
+	runId: string,
+	now: number
+): RunArtifacts {
+	const meta: FleetMeta = {
+		kind: "run",
+		fleetId: runId,
+		cwd: opts.cwd,
+		concurrency: 1,
+		aborted: false,
+		startedAt: opts.startedAt,
+		finishedAt: now,
+	};
+	const written = writeFleetReportFile(target.file, meta, [lane], now);
+	return {
+		runId,
+		dir: dirname(written.file),
+		report: written.file,
+		manifest: written.manifest,
+		bytes: written.bytes,
+		pruned: [],
+		warnings: written.warnings,
+	};
+}
+
+/** The configured run report root for this workspace (self-ignore check). */
+function defaultRunDir(cwd: string): string {
+	const target = resolveRunOutput(true, cwd, config.runOutput);
+	return target.mode === "dir" ? target.dir : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +385,8 @@ export interface FleetTaskParams {
 export interface FleetCallParams extends FleetTaskParams {
 	tasks: FleetTaskParams[];
 	concurrency?: number;
+	/** Where the fleet report is written: `true` = default root, a path, or `false` to skip. */
+	output?: string | boolean;
 }
 
 export async function executeFleet(
@@ -248,6 +401,8 @@ export async function executeFleet(
 	if (tasks.length > MAX_FLEET_TASKS)
 		throw new Error(`agy_fleet: too many tasks (${tasks.length}); max is ${MAX_FLEET_TASKS}`);
 	const concurrency = clampConcurrency(params.concurrency ?? config.fleetConcurrency);
+	const fleetStartedAt = Date.now();
+	const fleetId = newFleetId(fleetStartedAt, toolCallId.replace(/[^a-z0-9]/gi, "").slice(-4));
 
 	// Resolve every lane's role up front: an unknown role must fail the whole
 	// call before any agent is spawned, not silently mid-fan-out.
@@ -262,8 +417,9 @@ export async function executeFleet(
 		return role;
 	});
 
+	const laneIds = uniqueLaneIds(tasks.map((t, i) => t.id?.trim() || `t${i + 1}`));
 	const lanes: FleetLaneState[] = tasks.map((t, i) => ({
-		id: t.id?.trim() || `t${i + 1}`,
+		id: laneIds[i]!,
 		task: t.task,
 		workspace: t.workspace ? resolveWorkspace(t.workspace, ctx.cwd) : ctx.cwd,
 		status: "queued",
@@ -330,6 +486,9 @@ export async function executeFleet(
 		const rid = laneRunId(lane);
 		lane.status = "running";
 		lane.startedAt = Date.now();
+		lane.role = role?.id;
+		lane.model = role?.model ?? t.model ?? params.model;
+		lane.effort = role?.effort ?? t.effort ?? params.effort;
 		agyFleetRegistry.patch(rid, { status: "running", startedAt: lane.startedAt });
 		boardPush.schedule();
 		// A role supplies the prompt shape and the access policy; the caller keeps
@@ -366,7 +525,10 @@ export async function executeFleet(
 				policy?.model ?? t.model ?? params.model,
 				signal
 			);
-			if (usedModel) agyFleetRegistry.patch(rid, { model: usedModel });
+			if (usedModel) {
+				agyFleetRegistry.patch(rid, { model: usedModel });
+				lane.model = usedModel;
+			}
 			if (attempts.length > 1) r.warnings = [...(r.warnings ?? []), `model fallback: tried ${attempts.join(" → ")}.`];
 			lane.result = r;
 			lane.status = "done";
@@ -421,7 +583,80 @@ export async function executeFleet(
 	// orchestrator needs everything the lanes produced before the stop, and
 	// throwing here would discard work that already happened on disk.
 	const summary = summarizeFleet(lanes);
-	return buildFleetResult(lanes, summary, concurrency, { aborted: signal?.aborted === true });
+	const artifacts = writeArtifacts(lanes, {
+		fleetId,
+		cwd: ctx.cwd,
+		concurrency,
+		aborted: signal?.aborted === true,
+		startedAt: fleetStartedAt,
+		output: params.output,
+	});
+	return buildFleetResult(lanes, summary, concurrency, {
+		aborted: signal?.aborted === true,
+		artifacts,
+		cwd: ctx.cwd,
+	});
+}
+
+/** The configured report root for this workspace (used for the self-ignore check). */
+function defaultReportDir(cwd: string): string {
+	const target = resolveFleetOutput(undefined, cwd, config.fleetOutput);
+	return target.mode === "dir" ? target.dir : "";
+}
+
+/**
+ * Persist the fleet's reports. Output failures are warnings, never errors: the
+ * work already happened on disk, and a read-only workspace must not discard it.
+ */
+function writeArtifacts(
+	lanes: FleetLaneState[],
+	meta: { fleetId: string; cwd: string; concurrency: number; aborted: boolean; startedAt: number; output?: string | boolean }
+): FleetArtifacts | undefined {	const target = resolveFleetOutput(meta.output, meta.cwd, config.fleetOutput);
+	if (target.mode === "off") return undefined;
+	const fleetMeta = {
+		fleetId: meta.fleetId,
+		cwd: meta.cwd,
+		concurrency: meta.concurrency,
+		aborted: meta.aborted,
+		startedAt: meta.startedAt,
+		finishedAt: Date.now(),
+	};
+	try {
+		if (target.mode === "file") {
+			const written = writeFleetReportFile(target.file, fleetMeta, lanes);
+			return {
+				fleetId: fleetMeta.fleetId,
+				dir: dirname(target.file),
+				report: written.file,
+				manifest: written.manifest,
+				lanes: {},
+				bytes: written.bytes,
+				pruned: [],
+				warnings: written.warnings,
+			};
+		}
+		return writeFleetArtifacts({
+			root: target.dir,
+			lanes,
+			...fleetMeta,
+			keep: config.reportKeep,
+			maxAgeDays: config.reportMaxAgeDays,
+			// The default root lives under `.agy/`; keep it out of git without a
+			// second setup step. A user-chosen directory is left alone.
+			selfIgnore: target.dir === defaultReportDir(meta.cwd),
+		});
+	} catch (e) {
+		return {
+			fleetId: fleetMeta.fleetId,
+			dir: target.mode === "file" ? target.file : target.dir,
+			report: "",
+			manifest: "",
+			lanes: {},
+			bytes: 0,
+			pruned: [],
+			warnings: [`could not write the fleet report: ${(e as Error).message}`],
+		};
+	}
 }
 
 /** Model-facing lane responses are capped generously, not silently dropped. */
@@ -448,20 +683,36 @@ function buildFleetResult(
 	lanes: FleetLaneState[],
 	summary: ReturnType<typeof summarizeFleet>,
 	concurrency: number,
-	options: { aborted?: boolean } = {}
+	options: { aborted?: boolean; artifacts?: FleetArtifacts; cwd?: string } = {}
 ): AgentToolResult<Record<string, unknown>> {
 	const now = Date.now();
 	// A lane can report success while having done nothing (denied tool call), so
 	// surface how many lanes needed a warning instead of implying all were clean.
 	const warned = lanes.filter((lane) => (lane.result?.warnings?.length ?? 0) > 0).length;
 	const lines: string[] = [
-		`**agy_fleet — ${summary.done}/${summary.total} lanes succeeded${warned ? `, ${warned} with warnings` : ""}** ` +
-			`(${summary.total} lanes · ${formatDuration(summary.elapsedMs)} · concurrency ${concurrency})`,
+		`**agy_fleet — ${summary.done}/${summary.total} lane${summary.total === 1 ? "" : "s"} succeeded${warned ? `, ${warned} with warnings` : ""}** ` +
+			`(${summary.total} lane${summary.total === 1 ? "" : "s"} · ${formatDuration(summary.elapsedMs)} · concurrency ${concurrency})`,
 		"",
 	];
 	if (options.aborted) {
 		lines.push("> ⚠ the fleet was stopped early; the lanes below hold everything they produced before the stop.", "");
 	}
+	// The hand-off line: paths for another agent/third party, not a re-typed
+	// paraphrase of the lane responses.
+	const artifacts = options.artifacts;
+	if (artifacts && artifacts.report) {
+		const cwd = options.cwd ?? process.cwd();
+		const shown = displayPath(artifacts.report, cwd);
+		const laneCount = Object.keys(artifacts.lanes).length;
+		const pruned = artifacts.pruned.length ? ` · pruned ${artifacts.pruned.length} older` : "";
+		lines.push(
+			`Reports: \`${shown}\`` +
+				(laneCount ? ` (${laneCount} lane file${laneCount === 1 ? "" : "s"} + manifest.json)` : " (single document)") +
+				pruned
+		);
+		lines.push("");
+	}
+	for (const warning of artifacts?.warnings ?? []) lines.push(`> ⚠ ${warning}`, "");
 	for (const lane of lanes) {
 		const dur = formatDuration((lane.endedAt ?? now) - (lane.startedAt ?? now));
 		if (lane.status === "done" && lane.result) {
@@ -500,7 +751,7 @@ function buildFleetResult(
 	}
 	lines.push(
 		"",
-		`(${summary.total} lanes · ok=${summary.done} failed=${summary.failed} aborted=${summary.aborted} · ${formatDuration(summary.elapsedMs)})`
+		`(${summary.total} lane${summary.total === 1 ? "" : "s"} · ok=${summary.done} failed=${summary.failed} aborted=${summary.aborted} · ${formatDuration(summary.elapsedMs)})`
 	);
 
 	return {
@@ -530,6 +781,17 @@ function buildFleetResult(
 			concurrency,
 			elapsedMs: summary.elapsedMs,
 			duration_seconds: +(summary.elapsedMs / 1000).toFixed(1),
+			artifacts: artifacts
+				? {
+						dir: artifacts.dir,
+						report: artifacts.report || undefined,
+						manifest: artifacts.manifest || undefined,
+						lanes: artifacts.lanes,
+						bytes: artifacts.bytes,
+						pruned: artifacts.pruned.length ? artifacts.pruned : undefined,
+						warnings: artifacts.warnings.length ? artifacts.warnings : undefined,
+					}
+				: undefined,
 		},
 	};
 }

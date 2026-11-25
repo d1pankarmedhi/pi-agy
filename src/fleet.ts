@@ -18,6 +18,26 @@ export interface FleetLaneState {
 	live: LiveActivity;
 	result?: StreamResult;
 	error?: string;
+	/** Provenance kept for the written report (role, resolved model, effort). */
+	role?: string;
+	model?: string;
+	effort?: string;
+}
+
+/**
+ * Lane ids must be unique: two lanes sharing one id would fight over the same
+ * report file and be indistinguishable on the board. Duplicates get a `-2`.
+ */
+export function uniqueLaneIds(ids: readonly string[]): string[] {
+	const used = new Set<string>();
+	return ids.map((raw) => {
+		const base = raw.trim() || "lane";
+		let id = base;
+		let n = 2;
+		while (used.has(id)) id = `${base}-${n++}`;
+		used.add(id);
+		return id;
+	});
 }
 
 export interface FleetSummary {

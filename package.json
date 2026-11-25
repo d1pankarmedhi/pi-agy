@@ -1,7 +1,7 @@
 {
   "name": "@dmpunk/pi-agy",
   "version": "0.4.0",
-  "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Live status shows what the agent is doing (file edited, command run) and agy_fleet fans out multiple agents in parallel. Pi stays the orchestrator and verifies the agent's work. Zero-residue, installable/uninstallable as a pi package.",
+  "description": "Delegate low-level tasks (writing code, exploring codebases, research passes) to Google Antigravity's agy CLI / Gemini agent from pi. Live status shows what the agent is doing (file edited, command run), agy_fleet fans out multiple agents in parallel, and every fleet writes full per-lane reports (report.md + manifest.json) you can hand to another agent or a third party. Pi stays the orchestrator and verifies the agent's work. No state beyond the reports you ask for; installable/uninstallable as a pi package.",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -32,7 +32,9 @@
     "orchestration",
     "fleet",
     "fan-out",
-    "parallel"
+    "parallel",
+    "reports",
+    "artifacts"
   ],
   "author": "d1pankarmedhi",
   "license": "MIT",

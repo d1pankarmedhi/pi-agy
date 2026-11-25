@@ -126,6 +126,8 @@ export interface SingleDetails {
 	usage?: Record<string, number>;
 	conversation_id?: string;
 	toolSteps?: number;
+	/** Where this run's report was written (`output`), when it was. */
+	artifacts?: { runId?: string; dir?: string; report?: string; manifest?: string; bytes?: number };
 	/** Error text from pi when the tool failed before/without a card result. */
 	errorText?: string;
 }
@@ -158,6 +160,8 @@ export interface FleetDetails {
 	succeeded?: number;
 	failed?: number;
 	aborted?: number;
+	/** Where the full lane reports were written (agy_fleet artifacts). */
+	artifacts?: { dir?: string; report?: string; manifest?: string; lanes?: Record<string, string>; bytes?: number };
 	/** Error text from pi when the tool failed before/without a card result. */
 	errorText?: string;
 }
@@ -673,6 +677,19 @@ export function singleResultLines(
 		lines.push(...log);
 	}
 
+	// The report path is the hand-off point; show it whenever one was written.
+	const report = d.artifacts?.report || d.artifacts?.dir;
+	if (report) {
+		lines.push(divider(width, theme));
+		lines.push(
+			row(
+				"  " + theme.fg("muted", "report ") + theme.fg("accent", trunc(report, Math.max(8, width - 10))),
+				"",
+				width
+			)
+		);
+	}
+
 	if (expanded && (d.meta?.workspace || d.conversation_id)) {
 		lines.push(divider(width, theme));
 		if (d.meta?.workspace) {
@@ -936,6 +953,18 @@ export function fleetResultLines(
 		lines.push(divider(width, theme));
 		lines.push("  " + theme.fg("muted", "evidence"));
 		for (const line of evidence) lines.push("    " + theme.fg("text", trunc(line, Math.max(4, width - 4))));
+	}
+	// The report path is the hand-off point; show it on the card too.
+	const report = d.artifacts?.report || d.artifacts?.dir;
+	if (report) {
+		lines.push(divider(width, theme));
+		lines.push(
+			row(
+				"  " + theme.fg("muted", "report ") + theme.fg("accent", trunc(report, Math.max(8, width - 10))),
+				"",
+				width
+			)
+		);
 	}
 	return clampLines(lines, width);
 }

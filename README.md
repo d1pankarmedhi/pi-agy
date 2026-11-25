@@ -28,9 +28,12 @@ log** of every tool step. `agy_fleet` fans out multiple agy agents on a list of
 tasks with bounded concurrency and a live per-lane board.
 
 Install / uninstall through pi like any other package (`pi-web-access`,
-`pi-mcp-adapter`, …). pi-agy creates no files of its own — the only thing it
-writes is your own `~/.pi/agy.json`, when you run `/agy-model` or `/agy-effort`
-— so uninstalling leaves **zero residue**.
+`pi-mcp-adapter`, …). The extension itself keeps no state: uninstalling leaves
+**zero residue**. It writes only two things — your own `~/.pi/agy.json` when you
+run `/agy-model` or `/agy-effort`, and the [reports](#reports-hand-off-full-output)
+you ask for — every `agy_fleet` run (default `.agy/fleet`) and any single run
+called with `output` (default `.agy/runs`). Both roots are git-ignored and can be
+disabled with `fleetOutput: "off"` / `runOutput: "off"`.
 
 ## Requirements
 
@@ -58,9 +61,10 @@ pi list       # shows the installed source string, e.g. npm:@dmpunk/pi-agy
 pi remove <source>
 ```
 
-No residue: `pi remove` deletes the package install. pi-agy creates no files of
-its own; the only write is your own config file when you save a model/effort
-choice with `/agy-model` or `/agy-effort`.
+No residue: `pi remove` deletes the package install. The only writes are your
+own config file when you save a model/effort choice with `/agy-model` or
+`/agy-effort`, plus the fleet reports `agy_fleet` stores in `.agy/fleet`
+(git-ignored; `fleetOutput: "off"` disables them).
 
 > **Note on the npm name.** The package is published under the **`@dmpunk`**
 > scope as **`@dmpunk/pi-agy`**, because the bare name `pi-agy` is already taken
@@ -75,7 +79,8 @@ choice with `/agy-model` or `/agy-effort`.
 | `agy_code`    | Implementation tasks. Writes/edits files in the workspace; commands enabled by default.            |
 | `agy_vision`  | **Images & screenshots.** Read-only by default: inspects image files with the multimodal agent (screenshots, mockups, diagrams, charts, scanned pages). `images` accepts workspace-relative, absolute, `~/…`, Git-Bash, and `file://` paths — files outside the workspace are staged into a temp dir for the run. Pass a `url` and it captures a headless-Chrome screenshot first (implies `allowCommands`). |
 | `agy_role`    | **Specialist roles.** Delegate to a named specialist (`scout`, `implementer`, `reviewer`, `verifier`, `oracle`, plus your own) that bundles a shaped output contract with an enforced access policy. Read-only roles cannot be widened. See [Specialist roles](#specialist-roles). |
-| `agy_fleet`   | **Fan-out**: run 2–24 independent subtasks as parallel agy agents (bounded concurrency, default 3) with a live per-lane board and per-lane evidence. Each lane may name a `role`. |
+| `agy_fleet`   | **Fan-out**: run 2–24 independent subtasks as parallel agy agents (bounded concurrency, default 3) with a live per-lane board and per-lane evidence. Each lane may name a `role`. Writes the full lane reports to disk. |
+| `agy_reports` | List or clear the reports written to disk (see [Reports](#reports-hand-off-full-output)). |
 
 Exploration has no dedicated tool: use `agy_role` with the read-only `scout`
 role for a single recon pass, or read-only `agy_fleet` lanes (`role: "scout"`)
@@ -368,6 +373,84 @@ Lanes default to your current working directory unless they declare their own
 avoid conflicting edits. Per-lane `model`, `effort`, `agent`, `allowCommands`,
 `continueConv`, `jsonSchema`, and `timeout` override the call-level defaults.
 
+## Reports (hand off full output)
+
+A fleet's result is a summary: lane responses are capped at 4k characters so a
+24-lane fan-out does not flood the conversation. The **complete** output goes to
+disk on every fleet run, and the result names the path:
+
+```text
+Reports: `.agy/fleet/fleet-20251125-141133-a1b2/report.md` (4 lane files + manifest.json)
+```
+
+```text
+.agy/fleet/fleet-20251125-141133-a1b2/
+├── report.md          # one self-contained document: summary table + every lane
+├── manifest.json      # machine-readable index (statuses, evidence, provenance)
+└── lanes/
+    ├── t1.md          # frontmatter + task + full response + evidence + run log
+    └── t2.md
+```
+
+`report.md` is the file to hand to a person or a third party. `lanes/<id>.md`
+is one lane per file, so separate agents can each take their own. Every lane doc
+opens with YAML frontmatter — lane, status, role, model, workspace, duration,
+turns, tokens, `conversation_id`, files written, commands run — so the
+provenance survives the hand-off, and `conversation_id` means a follow-up run
+can resume that lane with `conversation: "<id>"`.
+
+Point it somewhere else, get a single file, or turn it off:
+
+```
+agy_fleet({ tasks: [...], output: "docs/research" })       # that directory
+agy_fleet({ tasks: [...], output: "docs/research/run.md" }) # one combined doc
+agy_fleet({ tasks: [...], output: false })                  # nothing on disk
+```
+
+### Single runs
+
+A single run (`agy`, `agy_code`, `agy_role`, `agy_vision`) already returns its
+response in full, so its report is **opt-in** — no file unless you ask:
+
+```
+agy_role({ role: "reviewer", prompt: "...", output: true })
+agy_code({ prompt: "...", output: "docs/impl" })
+agy({ prompt: "...", output: "docs/one.md" })
+```
+
+```text
+.agy/runs/run-20251125-151108-abcd/
+├── report.md          # frontmatter + task + response + evidence + run log
+└── manifest.json      # same provenance, machine-readable
+```
+
+The task recorded is what you asked for, not the role-expanded prompt or the
+vision guide — so a reviewer report still shows the original request above the
+expanded contract's output.
+
+### Cleanup
+
+**Cleanup is optional, not a required step.** Every write prunes older reports:
+
+| `reportKeep`       | newest N report directories kept per root (default 20, `0` = unlimited) |
+| `reportMaxAgeDays` | drop reports older than N days (default `0` = never) |
+
+When you want the space back immediately — after the reports have been read or
+handed off — `agy_reports` lists and clears both roots:
+
+```
+agy_reports({ action: "list" })                       # ids, kinds, sizes, lane counts
+agy_reports({ action: "clear", fleetId: "fleet-…" })  # one report
+agy_reports({ action: "clear", keep: 2 })             # all but the newest 2 per root
+agy_reports({ action: "clear", olderThan: "7d" })     # anything older than a week
+agy_reports({ action: "clear", all: true, dryRun: true })
+```
+
+`clear` requires a selector (no accidental wipe), only ever touches directories
+matching the `fleet-…`/`run-…` naming scheme directly under a report root,
+refuses to follow symlinks, and reports the bytes freed. From the terminal,
+`/agy-reports` lists and `/agy-reports clear` removes every stored report.
+
 ## Configuration
 
 Sensible defaults are baked in: `gemini-3.8-flash-high`, `effort=high`,
@@ -386,6 +469,10 @@ vars < CLI flags < per-call tool params.
 | `AGY_TIMEOUT`       | `10m`                   | max wait per run (`--print-timeout`)       |
 | `AGY_ALLOW_CMDS`    | `true`                  | pass `--dangerously-skip-permissions` by default |
 | `AGY_FLEET_CONCURRENCY` | `3`                 | max parallel lanes for `agy_fleet` (1–8)   |
+| `AGY_FLEET_OUTPUT`  | `.agy/fleet`            | where fleet reports are written (`off` to disable) |
+| `AGY_RUN_OUTPUT`    | `.agy/runs`             | where a single run writes its report when asked (`off` to disable) |
+| `AGY_REPORT_KEEP`   | `20`                    | report directories kept per root before pruning (`0` = unlimited) |
+| `AGY_REPORT_MAX_AGE_DAYS` | `0`               | prune reports older than N days (`0` = never) |
 | `AGY_FALLBACK_MODELS` | —                     | comma-separated models to retry with when a run fails outright |
 | `AGY_CONFIG`        | `~/.pi/agy.json`        | path to the optional user config file      |
 
@@ -399,7 +486,10 @@ tool params win over both):
   "effort": "high",
   "timeout": "10m",
   "defaultAllowCommands": true,
-  "fleetConcurrency": 3
+  "fleetConcurrency": 3,
+  "fleetOutput": ".agy/fleet",
+  "runOutput": ".agy/runs",
+  "reportKeep": 20
 }
 ```
 
@@ -571,6 +661,7 @@ conversation per workspace via `conversation_id`.
   your config (`--session` to skip saving).
 - `/agy-models` — show active config and list available models.
 - `/agy-fleet` — open the live fleet inspector (active + recently finished runs).
+- `/agy-reports [clear]` — list or clear the on-disk fleet reports.
 - `/agy-doctor` — check the setup: agy CLI + version, config file, workspace,
   permission mode, roles, model catalogue, and the fallback chain.
 

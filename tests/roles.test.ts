@@ -68,7 +68,18 @@ test("applyRole shapes the prompt and fills defaults, letting the caller overrid
 
 	const defaults = applyRole(reviewer, { prompt: "x" });
 	assert.equal(defaults.model, undefined, "no built-in model pin, so the global default applies");
-	assert.equal(defaults.effort, "high", "role effort default applies");
+	assert.equal(defaults.effort, undefined, "no built-in effort pin either; config supplies it");
+});
+
+test("no built-in role downgrades the effort: every tool runs at the global default", () => {
+	for (const role of resolveRoles(undefined)) {
+		const policy = applyRole(role, { prompt: "x" });
+		assert.equal(
+			policy.effort,
+			undefined,
+			`${role.id} must inherit the global effort (default: high) instead of pinning ${policy.effort}`
+		);
+	}
 });
 
 test("findRole is case-insensitive and tolerant of whitespace; roleIds lists choices", () => {

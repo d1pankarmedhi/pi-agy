@@ -63,7 +63,9 @@ export const agyRun = defineTool({
 			})
 		),
 		effort: Type.Optional(
-			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
+			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+				description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+			})
 		),
 		agent: Type.Optional(
 			Type.String({
@@ -133,7 +135,9 @@ export const agyCode = defineTool({
 		workspace: Type.Optional(Type.String({ description: "Directory to work in (defaults to cwd)." })),
 		model: Type.Optional(Type.String({ description: `Model slug (defaults to pi-agy's configured model).` })),
 		effort: Type.Optional(
-			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
+			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+				description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+			})
 		),
 		allowCommands: Type.Optional(
 			Type.Boolean({
@@ -210,7 +214,9 @@ export const agyVision = defineTool({
 			})
 		),
 		effort: Type.Optional(
-			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
+			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+				description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+			})
 		),
 		allowCommands: Type.Optional(
 			Type.Boolean({
@@ -313,7 +319,9 @@ export const agyRole = defineTool({
 		workspace: Type.Optional(Type.String({ description: "Directory to work in (defaults to cwd)." })),
 		model: Type.Optional(Type.String({ description: "Override the role's model." })),
 		effort: Type.Optional(
-			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])
+			Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+				description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+			})
 		),
 		allowCommands: Type.Optional(
 			Type.Boolean({
@@ -380,7 +388,11 @@ const fleetTaskSchema = Type.Object({
 		Type.String({ description: "Directory to run this lane in (defaults to cwd)." })
 	),
 	model: Type.Optional(Type.String({ description: `Model slug (defaults to pi-agy's configured model).` })),
-	effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+	effort: Type.Optional(
+		Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+			description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+		})
+	),
 	agent: Type.Optional(Type.String({ description: "agy agent to use for this lane." })),
 	allowCommands: Type.Optional(
 		Type.Boolean({ description: `Allow shell commands for this lane (default: ${config.defaultAllowCommands}).` })
@@ -437,7 +449,11 @@ export const agyFleet = defineTool({
 			})
 		),
 		model: Type.Optional(Type.String({ description: `Default model for all lanes (defaults to pi-agy's configured model).` })),
-		effort: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+		effort: Type.Optional(
+		Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+			description: `Reasoning effort for gemini models (default: ${config.effort}).`,
+		})
+	),
 		agent: Type.Optional(Type.String({ description: "Default agy agent for all lanes." })),
 		allowCommands: Type.Optional(
 			Type.Boolean({ description: `Default allowCommands for all lanes (default: ${config.defaultAllowCommands}).` })

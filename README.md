@@ -241,8 +241,9 @@ agy_role({ role: "verifier", prompt: "Claim: the cache is invalidated on write. 
 ```
 
 Read-only is **enforced**: `allowCommands` is forced off and a caller cannot
-raise it. A role can carry a default model and effort, which the caller may
-override — never the access policy.
+raise it. Built-in roles pin neither a model nor an effort, so every run uses
+the global default — `gemini-3.8-flash-high` at `high` effort. A custom role can
+pin one in config, and the caller can always override — never the access policy.
 
 Give each fleet lane a role when the work has different shapes:
 
@@ -280,9 +281,9 @@ access.
 
 ## Configuration
 
-Defaults: `gemini-3.8-flash-high`, `effort=high`, 10m timeout, commands allowed,
-fleet concurrency 3. Precedence is built-in defaults < `~/.pi/agy.json` < env
-vars < CLI flags < per-call tool params.
+Defaults: `gemini-3.8-flash-high` at `high` effort for every tool and role, 10m
+timeout, commands allowed, fleet concurrency 3. Precedence is built-in defaults <
+`~/.pi/agy.json` < env vars < CLI flags < per-call tool params.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |

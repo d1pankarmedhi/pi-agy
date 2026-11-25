@@ -31,10 +31,18 @@ export interface AgyConfig {
 	configFile: string;
 }
 
+/**
+ * Shipped defaults. The effort is `high` for every tool and role: built-in
+ * roles do not carry their own effort, so this is the one place the default
+ * comes from. Users can still lower it with `AGY_EFFORT` or `/agy-effort`.
+ */
+export const DEFAULT_MODEL = "gemini-3.8-flash-high";
+export const DEFAULT_EFFORT: AgyEffort = "high";
+
 const DEFAULT_CONFIG: Omit<AgyConfig, "configFile"> = {
 	bin: "agy",
-	model: "gemini-3.8-flash-high",
-	effort: "high",
+	model: DEFAULT_MODEL,
+	effort: DEFAULT_EFFORT,
 	timeout: "10m",
 	defaultAllowCommands: true,
 	fleetConcurrency: 3,

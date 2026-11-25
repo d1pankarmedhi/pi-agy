@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveModelEffort } from "../src/config.ts";
+import { DEFAULT_EFFORT, DEFAULT_MODEL, resolveModelEffort } from "../src/config.ts";
+import { effortFromModel } from "../src/model.ts";
 
 const base = { defaultModel: "gemini-3.8-flash-high", defaultEffort: "high" as const };
 
@@ -74,4 +75,9 @@ test("invalid and blank effort/model values are ignored", () => {
 		model: "gemini-3.8-flash-high",
 		effort: "high",
 	});
+});
+
+test("the shipped defaults are a high-effort gemini model", () => {
+	assert.equal(DEFAULT_EFFORT, "high", "every tool defaults to high effort");
+	assert.equal(effortFromModel(DEFAULT_MODEL), "high", "the default model slug agrees with the default effort");
 });

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every tool and role now defaults to `high` effort.** The built-in roles no
+  longer pin their own effort (`scout` was `low`), so one setting controls all
+  of them: the shipped default is `high`, and `AGY_EFFORT` / `/agy-effort` now
+  apply uniformly instead of being overridden per role. A role can still pin an
+  effort in `~/.pi/agy.json`, and an explicit `effort` on a call still wins.
+  Every tool schema documents the default.
+
 ## [0.5.0] - 2026-11-25
 
 ### Added

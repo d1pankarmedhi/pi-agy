@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
+import { config } from "../src/config.ts";
 import { buildAgyArgs, extractOutputTail, runAgy, splitExistingFiles } from "../src/runner.ts";
 import type { LiveActivity } from "../src/status.ts";
 
@@ -44,6 +45,14 @@ test("buildAgyArgs does not duplicate the workspace or blank add-dirs", () => {
 test("buildAgyArgs gates shell access behind allowCommands", () => {
 	assert.ok(!base({ allowCommands: false }).includes("--dangerously-skip-permissions"));
 	assert.ok(base({ allowCommands: true }).includes("--dangerously-skip-permissions"));
+});
+
+test("buildAgyArgs falls back to the configured effort when the caller passes none", () => {
+	const args = base({ model: undefined, effort: undefined });
+	const effort = args[args.indexOf("--effort") + 1];
+	assert.ok(effort, "an effort is always passed for a gemini model");
+	assert.equal(effort, config.effort, "the configured effort is the default");
+	assert.match(args[args.indexOf("--model") + 1]!, new RegExp(`-${effort}$`), "the slug matches");
 });
 
 test("buildAgyArgs keeps the gemini model slug and effort consistent", () => {

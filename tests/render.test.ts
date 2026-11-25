@@ -425,6 +425,35 @@ test("fleetResultLines reports per-lane outcome and evidence", () => {
 	assert.match(lines, /\[ingest\] files: worker\/src\/ingest\.ts/);
 });
 
+test("fleetResultLines surfaces the report path and its warnings", () => {
+	const lines = fleetResultLines(
+		{
+			succeeded: 1,
+			failed: 0,
+			aborted: 0,
+			lanes: [{ id: "t1", status: "done", response: "done" }],
+			artifacts: { report: ".agy/fleet/fleet-20251125-141133-a1b2/report.md" },
+		},
+		96,
+		theme,
+		false
+	).join("\n");
+	assert.match(lines, /report/);
+	assert.match(lines, /fleet-20251125-141133-a1b2\/report\.md/);
+});
+
+test("singleResultLines shows the report path when the run wrote one", () => {
+	const lines = singleResultLines(
+		"role",
+		{ ...doneDetails, artifacts: { report: ".agy/runs/run-20251125-151108-abcd/report.md" } },
+		96,
+		theme,
+		false
+	).join("\n");
+	assert.match(lines, /report/);
+	assert.match(lines, /run-20251125-151108-abcd\/report\.md/);
+});
+
 test("fleetResultLines shows a duration for a failed lane that only has elapsedMs", () => {
 	const lines = fleetResultLines(
 		{
@@ -465,8 +494,35 @@ test("all cards stay within the requested width", () => {
 		assertFits(at((w) => singleActivityLines("code", streamDetails, w, theme), width), width);
 		assertFits(at((w) => singleResultLines("code", doneDetails, w, theme, false), width), width);
 		assertFits(at((w) => singleResultLines("code", doneDetails, w, theme, true), width), width);
+		assertFits(
+			at(
+				(w) =>
+					singleResultLines(
+						"code",
+						{ ...doneDetails, artifacts: { report: "/a/very/long/path/to/.agy/runs/run-20251125-151108-abcd/report.md" } },
+						w,
+						theme,
+						false
+					),
+				width
+			),
+			width
+		);
 		assertFits(at((w) => fleetCallLines({ concurrency: 3, tasks: [{ id: "a-very-long-lane-id", task: "t".repeat(200) }] }, w, theme), width), width);
 		assertFits(at((w) => fleetBoardLines(fleetDetails, w, theme), width), width);
+		assertFits(
+			at(
+				(w) =>
+					fleetResultLines(
+						{ ...fleetDetails, artifacts: { report: "/a/very/long/path/to/.agy/fleet/fleet-20251125-141133-a1b2/report.md" } },
+						w,
+						theme,
+						false
+					),
+				width
+			),
+			width
+		);
 		assertFits(
 			at(
 				(w) =>

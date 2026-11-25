@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-25
+
+### Added
+
+- **Reports on disk — full output you can hand to another agent.** Every
+  `agy_fleet` run now writes its complete lane reports under `.agy/fleet/<fleet>/`
+  as `report.md` (one self-contained document), `manifest.json` (machine-readable
+  index with statuses, evidence, usage and `conversation_id`), and
+  `lanes/<id>.md` (frontmatter + task + untruncated response + caveats + run log).
+  The tool result names the path, so a downstream agent reads the file instead of
+  the 4k-character summary in the conversation. `output` selects the location
+  (`true` = default root, a directory, a `.md` file for a single combined
+  document, `false` = off). Config: `fleetOutput`, `reportKeep` (default 20),
+  `reportMaxAgeDays`; env: `AGY_FLEET_OUTPUT`, `AGY_REPORT_KEEP`,
+  `AGY_REPORT_MAX_AGE_DAYS`. The default root git-ignores itself. Write failures
+  become warnings — a read-only workspace never turns a finished fleet into a
+  failed tool call, and an aborted fleet still writes the lanes that completed.
+- **Single runs can write the same kind of report.** `agy`, `agy_code`,
+  `agy_role`, and `agy_vision` accept `output` too: omitted = no file (their
+  response already comes back whole), `true` = `<runOutput>/run-…/report.md` plus
+  `manifest.json` (default `.agy/runs`), a directory path, or a path ending in
+  `.md` for one document. The report records the user's own request, not the
+  role-expanded prompt. The result names the path.
+- **`agy_reports` — list and clear stored reports.** `action: "list"` shows
+  every stored report (fleet and run, across both roots) with kind, age, lane
+  counts and size; `action: "clear"` removes reports that have been consumed,
+  selected by `fleetId`, `keep` (newest N kept), `olderThan` (`7d`, `36h`) or
+  `all`, with `dryRun`. A selector is required, only directories matching the
+  `fleet-…`/`run-…` naming scheme directly under a report root are touched (no
+  symlink following), and the freed byte count is reported. Older reports are
+  also pruned automatically on write, so cleanup is an optimisation, not a step
+  the orchestrator has to remember. `/agy-reports [clear]` does the same from the
+  terminal.
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

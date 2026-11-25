@@ -18,12 +18,17 @@
  *   - `agy_fleet` fans out multiple agy agents on a list of tasks (bounded
  *     concurrency) and publishes a live per-lane board, then returns per-lane
  *     evidence for verification.
+ *   - Every fleet writes its full lane reports to disk (report.md,
+ *     manifest.json, lanes/<id>.md) so the orchestrator can hand a path to
+ *     another agent instead of a truncated summary. A single run writes the same
+ *     kind of report when the caller asks (`output: true`). `agy_reports` lists
+ *     and clears them; older reports are pruned automatically.
  *
  * Module layout (src/): config, model, paths, vision (image-prompt building),
  * status (live activity state), ui (width-safe card primitives), render (TUI
  * cards), fleet (fan-out board), runner (agy stream parsing), results (tool
- * result assembly), executors (shared tool execution), tools (tool definitions
- * + renderers).
+ * result assembly), artifacts (fleet reports on disk), executors (shared tool
+ * execution), tools (tool definitions + renderers).
  * This entry file only wires everything into the extension runtime.
  *
  * Requirements:
@@ -32,7 +37,9 @@
  *
  * Configuration (all optional — sensible defaults below):
  *   - Env vars:  AGY_BIN, AGY_MODEL, AGY_EFFORT, AGY_AGENT, AGY_TIMEOUT,
- *                AGY_ALLOW_CMDS, AGY_FLEET_CONCURRENCY, AGY_CONFIG
+ *                AGY_ALLOW_CMDS, AGY_FLEET_CONCURRENCY, AGY_FLEET_OUTPUT,
+ *                AGY_RUN_OUTPUT, AGY_REPORT_KEEP, AGY_REPORT_MAX_AGE_DAYS,
+ *                AGY_CONFIG
  *   - User file: ~/.pi/agy.json (path overridable via AGY_CONFIG)
  *   - Terminal:  /agy-model and /agy-effort pick the model + effort live and
  *                save them to the user file; `pi --agy-model` / `pi
@@ -40,9 +47,12 @@
  *   Order of precedence: built-in defaults < user file < env vars < CLI flags
  *   < per-call tool params.
  *
- * The extension writes nothing of its own — only your own `~/.pi/agy.json`
- * when you run `/agy-model` or `/agy-effort` — so `pi remove` leaves no
- * residue.
+ * The extension writes nothing of its own except the reports you ask for: a
+ * fleet always writes them (default `.agy/fleet`), a single run writes them when
+ * called with `output` (default `.agy/runs`). Both roots ignore themselves in
+ * git and can be disabled (`fleetOutput`/`runOutput`: "off"). Otherwise the only
+ * file it touches is your own `~/.pi/agy.json` when you run `/agy-model` or
+ * `/agy-effort`.
  *
  * Headless-mode permissions:
  *   File reads/writes inside the workspace are auto-allowed by agy. Shell
@@ -76,8 +86,9 @@ import { doctorDeps, formatDoctorReport, runDoctor } from "./src/doctor.ts";
 import { AgyFleetView } from "./src/fleetview.ts";
 import { openFleetInspector } from "./src/inspector.ts";
 import { agyFleetRegistry } from "./src/registry.ts";
+import { clearAllReports, displayPath, formatBytes, listAllReports, reportRoots } from "./src/artifacts.ts";
 import { runAgy } from "./src/runner.ts";
-import { agyCode, agyFleet, agyRole, agyRun, agyVision } from "./src/tools.ts";
+import { agyCode, agyFleet, agyReports, agyRole, agyRun, agyVision } from "./src/tools.ts";
 
 // Re-export the public surface (helper functions/types used by tests and
 // external consumers).
@@ -188,7 +199,7 @@ export type { RenderComponent, ThemeLike } from "./src/ui.ts";
 export { buildResult } from "./src/results.ts";
 export { executeAgy, executeFleet } from "./src/executors.ts";
 export type { AgyToolParams, FleetCallParams, FleetTaskParams } from "./src/executors.ts";
-export { agyCode, agyFleet, agyRole, agyRun, agyVision } from "./src/tools.ts";
+export { agyCode, agyFleet, agyReports, agyRole, agyRun, agyVision } from "./src/tools.ts";
 export {
 	buildVisionPrompt,
 	isImagePath,
@@ -231,6 +242,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(agyVision);
 	pi.registerTool(agyRole);
 	pi.registerTool(agyFleet);
+	pi.registerTool(agyReports);
 
 	// CLI flags set the session defaults at launch:
 	//   pi --agy-model gemini-3.1-pro-high --agy-effort high
@@ -285,6 +297,10 @@ export default function (pi: ExtensionAPI) {
 		"- Codebase exploration has no dedicated tool: use agy_role({ role: \"scout\", prompt }) for a read-only recon pass, or read-only agy_fleet lanes when several areas need mapping at once. Read-only roles are enforced — they cannot be granted write or shell access.",
 		"- Image and screenshot work goes to agy_vision({ images: [\"path/to/shot.png\"], prompt, url?, jsonSchema? }): the agent opens the actual pixels. `images` accepts workspace-relative, absolute, `~/…`, Windows, Git-Bash, and file:// paths — files outside the workspace are staged into a temp dir for the run, so you can point at screenshots anywhere on disk. `url` makes it capture a headless-Chrome screenshot first (implies allowCommands). pi cannot attach images inline, so pass file paths.",
 		"- For independent subtasks, fan out with agy_fleet(tasks:[{id, task, workspace?, role?, allowCommands?}, ...]) — each lane is a separate agy agent; the live board and per-lane results tell you what each one did. A lane may name a specialist role.",
+		"- agy_fleet also writes every lane's full, untruncated report to disk (report.md + manifest.json + lanes/<id>.md) and names the path in its result. Read that file when you need the complete text, and pass the path on when another agent or a third party needs the report.",
+		"- A single agy run returns its response in full, so a file is opt-in: pass output: true (or a directory, or a path ending in .md) when the report should outlive the conversation or be handed off. The result then names the report path.",
+		"- agy_reports({ action: \"list\" }) shows every stored report; agy_reports({ action: \"clear\", ... }) removes the ones already consumed.",
+		"- When a fleet's reports have been consumed, clear them with agy_reports({ action: \"clear\", fleetId?|keep?|olderThan?|all? }) to free space; agy_reports({ action: \"list\" }) shows what is stored. Clearing is optional — old reports are pruned automatically.",
 		"- Prefer agy_role({ role, prompt }) when the work has a recognisable shape — it applies a prompt contract plus an access policy that an unstructured prompt does not get: scout (read-only recon), implementer (edits + validation), reviewer (findings with severities), verifier (audits claimed evidence), oracle (second opinion). Read-only roles are enforced and cannot be granted write or shell access.",
 		"After a delegated agy run (including each agy_fleet lane), VERIFY the outcome yourself before reporting success:",
 		"- files the agent claims to have written exist and contain what was asked (use read / ls / grep),",
@@ -303,6 +319,60 @@ export default function (pi: ExtensionAPI) {
 		description: "Open the live agy fleet inspector (active + recent runs)",
 		handler: async (_args, ctx) => {
 			await openFleetInspector(ctx, agyFleetRegistry);
+		},
+	});
+
+	// Inspect or clear the on-disk fleet reports.
+	pi.registerCommand("agy-reports", {
+		description: "List or clear the fleet reports written by agy_fleet (/agy-reports [clear])",
+		handler: async (args, ctx) => {
+			const notify = (message: string, type: "info" | "warning" | "error" = "info") =>
+				ctx.hasUI ? ctx.ui.notify(message, type) : console.log(message);
+			const roots = reportRoots(ctx.cwd, config.fleetOutput, config.runOutput);
+			if (!roots.length) {
+				return notify(
+					`Report output is disabled (fleetOutput="${config.fleetOutput}", runOutput="${config.runOutput}").`,
+					"warning"
+				);
+			}
+			const shown = roots.map((root) => displayPath(root, ctx.cwd)).join(", ");
+
+			if (!/^(clear|prune|reset|delete)\b/i.test(args.trim())) {
+				const reports = listAllReports(roots);
+				if (!reports.length) return notify(`No stored reports under ${shown} yet.`);
+				const total = reports.reduce((sum, report) => sum + report.bytes, 0);
+				return notify(
+					[
+						`Reports — ${shown} · ${reports.length} · ${formatBytes(total)}`,
+						...reports
+							.slice(0, 10)
+							.map(
+								(report) =>
+									`  ${report.id}  ${report.lanes ? `${report.done}/${report.lanes} ok` : "—"}  ${formatBytes(report.bytes)}`
+							),
+						reports.length > 10 ? `  … +${reports.length - 10} more` : "",
+						"",
+						"/agy-reports clear  removes every stored report.",
+					]
+						.filter(Boolean)
+						.join("\n")
+				);
+			}
+
+			const active = agyFleetRegistry.active().length;
+			if (active) {
+				return notify(
+					`${active} agy run${active === 1 ? " is" : "s are"} still active — clear the reports once they finish.`,
+					"warning"
+				);
+			}
+			const result = clearAllReports(roots, { all: true });
+			// With nothing running, the session board can be reset too.
+			agyFleetRegistry.clear();
+			notify(
+				`Cleared ${result.removed.length} report${result.removed.length === 1 ? "" : "s"} ` +
+					`(${formatBytes(result.bytes)}) under ${shown}.`
+			);
 		},
 	});
 

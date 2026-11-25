@@ -16,6 +16,14 @@ export interface AgyConfig {
 	timeout: string;
 	defaultAllowCommands: boolean;
 	fleetConcurrency: number;
+	/** Where `agy_fleet` writes reports (`off` disables them). */
+	fleetOutput: string;
+	/** Where single runs write a report when asked (`output: true`). */
+	runOutput: string;
+	/** Report directories kept per root before the oldest are pruned (0 = unlimited). */
+	reportKeep: number;
+	/** Report directories older than this many days are pruned (0 = never). */
+	reportMaxAgeDays: number;
 	/** Models to retry with, in order, when a run fails outright. */
 	fallbackModels: string[];
 	/** User-defined or overriding specialist roles (see src/roles.ts). */
@@ -30,6 +38,10 @@ const DEFAULT_CONFIG: Omit<AgyConfig, "configFile"> = {
 	timeout: "10m",
 	defaultAllowCommands: true,
 	fleetConcurrency: 3,
+	fleetOutput: ".agy/fleet",
+	runOutput: ".agy/runs",
+	reportKeep: 20,
+	reportMaxAgeDays: 0,
 	fallbackModels: [],
 	roles: {},
 };
@@ -42,6 +54,12 @@ export const MAX_FLEET_TASKS = 24;
 export function clampConcurrency(n: number, max = MAX_FLEET_CONCURRENCY): number {
 	if (!Number.isFinite(n)) return DEFAULT_CONFIG.fleetConcurrency;
 	return Math.min(max, Math.max(1, Math.floor(n)));
+}
+
+/** Retention count: non-negative whole number, 0 meaning "no count-based pruning". */
+export function clampKeep(n: number): number {
+	if (!Number.isFinite(n)) return DEFAULT_CONFIG.reportKeep;
+	return Math.max(0, Math.floor(n));
 }
 
 function userConfigPath(): string {
@@ -104,6 +122,11 @@ function loadConfig(): AgyConfig {
 		const n = parseInt(v ?? "", 10);
 		return Number.isFinite(n) && n > 0 ? n : dflt;
 	};
+	// Retention accepts 0 (= unlimited); the >0 clamp of envInt would swallow it.
+	const envCount = (v: string | undefined, dflt: number) => {
+		const n = parseInt(v ?? "", 10);
+		return Number.isFinite(n) && n >= 0 ? n : dflt;
+	};
 	const { model, effort } = resolveModelEffort({
 		envModel: process.env.AGY_MODEL,
 		envEffort: process.env.AGY_EFFORT,
@@ -121,6 +144,13 @@ function loadConfig(): AgyConfig {
 		defaultAllowCommands: envBool(process.env.AGY_ALLOW_CMDS, file.defaultAllowCommands ?? DEFAULT_CONFIG.defaultAllowCommands),
 		fleetConcurrency: clampConcurrency(
 			envInt(process.env.AGY_FLEET_CONCURRENCY, file.fleetConcurrency ?? DEFAULT_CONFIG.fleetConcurrency)
+		),
+		fleetOutput: process.env.AGY_FLEET_OUTPUT ?? file.fleetOutput ?? DEFAULT_CONFIG.fleetOutput,
+		runOutput: process.env.AGY_RUN_OUTPUT ?? file.runOutput ?? DEFAULT_CONFIG.runOutput,
+		reportKeep: clampKeep(envCount(process.env.AGY_REPORT_KEEP, file.reportKeep ?? DEFAULT_CONFIG.reportKeep)),
+		reportMaxAgeDays: Math.max(
+			0,
+			envCount(process.env.AGY_REPORT_MAX_AGE_DAYS, file.reportMaxAgeDays ?? DEFAULT_CONFIG.reportMaxAgeDays)
 		),
 		fallbackModels: parseModelList(process.env.AGY_FALLBACK_MODELS) ?? file.fallbackModels ?? DEFAULT_CONFIG.fallbackModels,
 		roles: file.roles ?? DEFAULT_CONFIG.roles,

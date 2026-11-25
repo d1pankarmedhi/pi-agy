@@ -39,7 +39,11 @@ export interface AgyRole {
 	readOnly: boolean;
 	/** Default model for the role (falls back to the global model). */
 	model?: string;
-	/** Default effort for the role (falls back to the global effort). */
+	/**
+	 * Default effort for the role. Built-ins leave this unset so every tool runs
+	 * at the global effort (`high` unless the user changes it); set it in config
+	 * to pin one role.
+	 */
 	effort?: AgyEffort;
 	/** Structured-output schema hint applied to the role's final answer. */
 	jsonSchema?: string;
@@ -62,7 +66,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		description: "Fast read-only codebase recon that returns compressed context for handoff.",
 		allowCommands: false,
 		readOnly: true,
-		effort: "low",
 		guidance: [
 			"You are a scouting agent. You have NO write or shell access: use only list_dir, view_file, grep_search, and read_resource.",
 			"Move fast but never guess. Start from any paths, symbols, or filenames named in the task; use grep_search for discovery and view_file for targeted reading instead of reading whole files.",
@@ -86,7 +89,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		description: "Implementation agent: narrow, correct edits plus validation.",
 		allowCommands: true,
 		readOnly: false,
-		effort: "high",
 		guidance: [
 			"You are the implementation agent and the single writer thread. Execute the assigned task with narrow, coherent edits.",
 			"First read the existing code at the named seams, then make the smallest correct change that follows the codebase's existing patterns.",
@@ -106,7 +108,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		description: "Read-only review of a diff, plan, or proposal, with evidence and severities.",
 		allowCommands: false,
 		readOnly: true,
-		effort: "high",
 		guidance: [
 			"You are a disciplined review agent with NO write or shell access. Inspect the actual files; do not guess.",
 			"Report only concrete, current problems you can justify from source evidence — a code path, a test result, or a stated contract. Do not invent issues.",
@@ -126,7 +127,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		description: "Independently checks whether claimed evidence is actually supported.",
 		allowCommands: false,
 		readOnly: true,
-		effort: "high",
 		guidance: [
 			"You are an evidence auditor with NO write or shell access. You are given claims together with the artefacts that are supposed to support them.",
 			"For each claim, open the cited file and decide whether the claim is SUPPORTED, PARTIALLY SUPPORTED, or UNSUPPORTED, quoting the exact lines that justify your verdict.",
@@ -147,7 +147,6 @@ export const BUILTIN_ROLES: readonly Omit<AgyRole, "builtin">[] = [
 		description: "Second opinion before acting: challenges assumptions without editing anything.",
 		allowCommands: false,
 		readOnly: true,
-		effort: "high",
 		guidance: [
 			"You are an advisory second opinion with NO write or shell access. Your job is to challenge the plan, not to please the caller.",
 			"Read whatever the task points at, then attack the direction: what is assumed, what is untested, what will break, what is being ignored, and what a simpler alternative would look like.",

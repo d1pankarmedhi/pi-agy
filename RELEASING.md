@@ -30,8 +30,7 @@ Do these once, before the first release.
      at least one approval, and disallow force-pushes.
    - `develop`: require the `CI` status checks and disallow force-pushes.
 
-3. **Enable private vulnerability reporting and CodeQL** (Settings → Code
-   security). The `CodeQL` workflow also runs on a schedule.
+3. **Enable private vulnerability reporting** (Settings → Code security).
 
 4. **Own the npm scope.** The package publishes as `@dmpunk/pi-agy`, so an npm
    organization named `dmpunk` must exist and your account must be a member with

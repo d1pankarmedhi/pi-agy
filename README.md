@@ -472,8 +472,7 @@ pi -e /absolute/path/to/pi-agy
 `develop` is the integration branch and the target for pull requests. Every push
 to either branch, and every pull request, runs
 [CI](.github/workflows/ci.yml) (typecheck + tests on Node 22, 24, 26, tarball
-check) and [CodeQL](.github/workflows/codeql.yml). Releases are cut by pushing an
-annotated `vX.Y.Z` tag on `main`; the
+check). Releases are cut by pushing an annotated `vX.Y.Z` tag on `main`; the
 [Release workflow](.github/workflows/release.yml) verifies the tag against
 `package.json`, publishes to npm with provenance, and opens a GitHub Release.
 The full runbook, including npm Trusted Publishing, is in
